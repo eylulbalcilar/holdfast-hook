@@ -1,0 +1,29 @@
+# Foundry
+cache/
+out/
+broadcast/
+!broadcast/*/dry-run/
+
+# Env
+.env
+.env.local
+
+# IDE
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Node 
+node_modules/
+dist/
+
+# Python sim 
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# Coverage
+lcov.info
+coverage/

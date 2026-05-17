@@ -31,24 +31,24 @@ UHI9 theme: "Impermanent Loss and Yield Systems"
 ## Architecture
 
 ```
-            ┌──────────────────┐
-            │  HoldfastHook    │
-            │  (v4 lifecycle)  │
-            └────────┬─────────┘
-                     │
-        ┌────────────┼────────────┐
-        │            │            │
-        ▼            ▼            ▼
+        ┌──────────────────┐
+        │  HoldfastHook    │
+        │  (v4 lifecycle)  │
+        └────────┬─────────┘
+                 │
+    ┌────────────┼────────────┐
+    │            │            │
+    ▼            ▼            ▼
 ┌──────────────┐ ┌─────────┐ ┌────────────┐
 │ScoreAccumul. │ │HoldfastNFT│ │YieldRouter │
 │  (library)   │ │ (ERC-721) │ │ (Aave V3)  │
 └──────────────┘ └─────────┘ └─────┬──────┘
-                                   │
-                                   ▼
-                          ┌─────────────────┐
-                          │  Aave V3 Pool   │
-                          │ (Base Sepolia)  │
-                          └─────────────────┘
+                                    │
+                                    ▼
+                           ┌─────────────────┐
+                           │  Aave V3 Pool   │
+                           │ (Base Sepolia)  │
+                           └─────────────────┘
 ```
 
 ### Contracts
@@ -87,6 +87,8 @@ IL = 2 × sqrt(priceRatio) / (1 + priceRatio) - 1
 
 IL is negative (representing loss). The realized-IL arm distributes its allocation proportional to the absolute value of IL incurred, across all active positions that have non-zero IL.
 
+The formula has been verified against the constant-product impermanent loss reference values (Uniswap research, Bancor documentation), and the Q64.96 integer implementation that will be used in `ScoreAccumulator.sol` agrees with the float reference to zero rounding error across 11 price scenarios. See `scripts/sim/results/realized_il_check/` for the reference table used by `test/unit/ScoreAccumulator.t.sol`.
+
 ### Tier Thresholds
 
 Tiers require both a cumulative score threshold AND a minimum active block count. Both conditions must be satisfied for tier qualification. Score values are WAD-scaled (multiplied by 1e18) to match Solidity fixed-point conventions.
@@ -99,10 +101,12 @@ Tiers require both a cumulative score threshold AND a minimum active block count
 
 The dual-criterion design prevents whales from instantly reaching Gold through high liquidity (a high-liquidity position could otherwise accumulate the score threshold in minutes), while linear `liquidityShare` in the score formula prevents sybil split attacks.
 
-Threshold values were calibrated via Python simulation (`scripts/sim/tier_calibration.py`). Calibration results:
-- Medium LP (10% pool share, medium volatility, 200-tick range) reaches Bronze in 33 min (blocks-gated)
-- Whale (50% pool share, narrow range, high volatility) reaches Gold in 2.3 days (blocks-gated, mitigation working)
-- Small LPs (2% pool share) are score-gated at higher tiers (acceptable design: requires consistent participation)
+Threshold values were calibrated via Python simulations under `scripts/sim/`, with results committed under `scripts/sim/results/`. Calibration summary:
+
+- **Tier accumulation timing** across 6 LP profiles (`tier_calibration/`): medium LP reaches Bronze in 33 min (blocks-gated), whale reaches Gold in 2.3 days (blocks-gated), small LPs are score-gated at higher tiers by design.
+- **Whale-instant-Gold mitigation sweep** across 48 whale configurations (`whale_instant_gold/`): all configurations blocks-gated at Gold, 79.6x slowdown for the worst-case whale (99% liquidity share, 2.0x volatility, 10-tick range).
+- **Net LP returns** across three parameter regimes (`net_lp_returns/`): mechanism is volatility-sensitive; Gold premium ranges from +0.14% (low-vol baseline) to +10.23% (high-vol pool). See Net LP Returns section.
+- **Realized IL formula sanity check** (`realized_il_check/`): formula matches constant-product reference values; Q64.96 integer path agrees with float reference to zero rounding error across 11 price scenarios.
 
 ### Bonus Pool Source and Distribution
 
@@ -238,47 +242,48 @@ The realized-IL arm captures only 30% of the bonus pool. Full IL hedging would r
 
 A pure score-based tier system is vulnerable to whale-instant-Gold: a high-liquidity position can reach 100,000 score in under an hour. The minimum active block requirement enforces tenure mechanically, ensuring the loyalty narrative is defensible at the protocol level.
 
+A 48-configuration whale parameter sweep (liquidity share 50 to 99%, volatility 0.5 to 2.0, tick width 10 to 200) confirms that all whale configurations are blocks-gated under the dual criterion. The worst-case whale (99% liquidity share, 2.0x volatility, 10-tick range) reaches the score threshold in approximately 1,256 blocks (~42 minutes), but the 100,000-block minimum enforces 2.31 days, a 79.6x slowdown. See `scripts/sim/results/whale_instant_gold/`.
+
 ### Redistribution Rate at 15%
 
-Bonus pool funding draws 15% of pool fees. Lower rates (5 to 10%) weaken the bonus pool's effective size; higher rates (20 to 30%) penalize early-stage LPs before they qualify for any tier. 15% positions loyal LPs at marginal positive net return, mercenary LPs at marginal negative, and new LPs at reasonable time-to-breakeven. The rate is configurable per pool and subject to calibration.
+Bonus pool funding draws 15% of pool fees. Lower rates (5 to 10%) weaken the bonus pool's effective size; higher rates (20 to 30%) penalize early-stage LPs before they qualify for any tier. 15% positions loyal LPs at marginal positive net return, mercenary LPs at marginal negative, and new LPs at reasonable time-to-breakeven. The rate is configurable per pool and subject to per-pool calibration based on the observed volatility regime; see Net LP Returns for the calibration sweep.
 
 ## Net LP Returns
 
-Illustrative example: $1M monthly swap volume, 0.30% pool fee, 15% redistribution rate, average volatility multiplier 1.2x.
+The following table summarizes net LP returns across three calibration scenarios. All scenarios share: $1M monthly swap volume, 0.30% pool fee, 3% Aave V3 USDC supply APY (testnet estimate), LP holds 10% of pool liquidity, 70% tier-weighted arm fraction (the realized-IL arm at 30% is excluded since it is path-dependent and is sanity-checked separately). Source: `scripts/sim/net_lp_returns.py`; full reports in `scripts/sim/results/net_lp_returns/`.
 
-- Total swapper pays: $3,000 (identical with or without Holdfast)
-- LP direct fee pool: $3,000 × 0.85 = $2,550
-- Bonus pool: $3,000 × 0.15 × 1.2 = $540
+**Scenarios:**
 
-For an LP holding 10% of pool liquidity:
+- **Baseline (low-vol pool):** redistribution rate 15%, volatility multiplier 1.2x. DESIGN.md defaults under a low-volatility regime.
+- **High-volatility pool:** redistribution rate 15%, volatility multiplier 2.0x. Same redistribution rate, volatile pair (e.g. ETH/BTC during stress).
+- **Adjusted redistribution:** redistribution rate 20%, volatility multiplier 1.5x. Stronger bonus pool funding, tighter mercenary penalty.
 
-| LP type | Standard pool | Holdfast | Net difference |
+**Cross-scenario delta vs standard pool (in %, for an LP holding 10% of pool liquidity):**
+
+| LP profile | Baseline (low-vol) | High-volatility | Adjusted redistribution |
 |---|---|---|---|
-| Mercenary (no tier) | $300 | $255 + $0 = **$255** | -15% |
-| Bronze (1 of 50, 2% share) | $300 | $255 + $540×0.25×0.02 = **$258** | -14% |
-| Silver (1 of 10, 10% share) | $300 | $255 + $540×0.35×0.10 = **$274** | -9% |
-| Silver (1 of 3, 30% share) | $300 | $255 + $540×0.35×0.30 = **$312** | +4% |
-| Gold (1 of 3, 30% share) | $300 | $255 + $540×0.40×0.30 = **$320** | +7% |
+| Mercenary (no tier) | -15.00% | -15.00% | -20.00% |
+| Bronze (1 of 50, 2% intra-tier share) | -14.37% | -13.95% | -18.95% |
+| Silver (1 of 10, 10% intra-tier share) | -10.58% | -7.64% | -12.64% |
+| Silver (1 of 3, 30% intra-tier share) | -1.75% | +7.08% | +2.08% |
+| Gold (1 of 3, 30% intra-tier share) | +0.14% | +10.23% | +5.23% |
 
-Additional uplift not shown in the table:
+**Calibration findings:**
 
-- Realized-IL arm: applies only to positions that incurred IL
-- Aave V3 supply yield: accrued during bonus pool idle time
+- The baseline (low-vol) scenario produces a marginal Gold premium near zero. This is consistent with the Limitations section: Holdfast provides minimal LP benefit on low-volatility pools.
+- The mechanism scales with pool volatility. The high-volatility scenario restores a meaningful loyal-LP premium (+10.23% at Gold) without changing the redistribution rate.
+- Raising redistribution to 20% with a moderate volatility multiplier (1.5x) produces a more uniform premium and sharpens the mercenary penalty to -20%.
+- The realized-IL arm (30% of bonus pool) is excluded from these figures; it applies only to positions that incurred IL and depends on the actual price path.
+- The Aave V3 supply yield on the bonus pool contributes a small positive offset in all scenarios (sub-cent at the monthly scale of this example); contribution scales with TVL and APY and is included in the underlying CSV.
 
-Interpretation:
-
-- Loyalty is economically rewarded: high-tier LPs with significant intra-tier share outperform the standard pool
-- Mercenary LPs experience structural disadvantage: -15% is the designed retention penalty
-- New LPs begin marginally negative and cross to positive as they accumulate score and intra-tier share
-
-These figures are illustrative. Calibration against testnet scenarios is required to finalize parameters.
+**Recommended deployment:** target pools with >20% annualized volatility. Per-pool calibration of `redistributionRate` should account for the observed volatility regime; the parameter is set at initialization and is not modifiable after the pool is configured.
 
 ## Limitations
 
 Holdfast is designed for a specific pool segment. It is not suitable for:
 
 - **Low-volume pools** (< ~100 swaps/day): the 10-observation volatility buffer retains stale data, degrading the volatility signal
-- **Low-volatility pools** (< 20% annualized): the volatility multiplier remains near 1.0x, and fee redistribution provides minimal LP benefit; stablecoin pools (USDC/USDT etc.) fall into this category
+- **Low-volatility pools** (< 20% annualized): the volatility multiplier remains near 1.0x, and fee redistribution provides minimal LP benefit (the baseline calibration scenario in Net LP Returns confirms this); stablecoin pools (USDC/USDT etc.) fall into this category
 - **Range-bound pairs:** sideways markets produce low scores, making tier qualification difficult or impossible
 
 Recommended deployment criteria:
@@ -310,7 +315,7 @@ Holdfast's contribution is the synthesis: IL-aware scoring + realized-IL compens
 | NFT transfer accrual theft | `_beforeTokenTransfer` settles to the original owner |
 | Volatility manipulation (sandwich) | 10-observation ring buffer dampens single-swap impact |
 | Whale split sybil | Linear `liquidityShare` in score formula (formula-level protection) |
-| Whale-instant-Gold | Minimum active block requirement at each tier |
+| Whale-instant-Gold | Minimum active block requirement at each tier; 48-config sweep confirms all whale profiles blocks-gated (79.6x slowdown for worst case) |
 | Open/close farming | Streaks freeze rather than reset; no farming benefit |
 | Reentrancy on claim | ReentrancyGuard + checks-effects-interactions |
 | Aave withdraw failure | Try/catch with fallback path in the claim flow |
@@ -355,6 +360,13 @@ holdfast-hook/
 │   └── integration/
 ├── script/
 │   └── Deploy.s.sol
+├── scripts/
+│   └── sim/
+│       ├── tier_calibration.py
+│       ├── whale_instant_gold.py
+│       ├── net_lp_returns.py
+│       ├── realized_il_check.py
+│       └── results/
 ├── frontend/
 │   └── index.html
 ├── foundry.toml

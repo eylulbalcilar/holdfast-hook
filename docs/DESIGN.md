@@ -89,15 +89,20 @@ IL is negative (representing loss). The realized-IL arm distributes its allocati
 
 ### Tier Thresholds
 
-Tiers require both a cumulative score threshold AND a minimum active block count. Both conditions must be satisfied for tier qualification.
+Tiers require both a cumulative score threshold AND a minimum active block count. Both conditions must be satisfied for tier qualification. Score values are WAD-scaled (multiplied by 1e18) to match Solidity fixed-point conventions.
 
-| Tier | Score threshold | Minimum active blocks |
+| Tier | Score threshold (WAD) | Minimum active blocks |
 |---|---|---|
-| Bronze | 1,000 | 1,000 (~33 min on Base) |
-| Silver | 10,000 | 10,000 (~5.5 hours) |
-| Gold | 100,000 | 100,000 (~2.3 days) |
+| Bronze | 10 × 1e18 | 1,000 (~33 min on Base) |
+| Silver | 100 × 1e18 | 10,000 (~5.6 hours) |
+| Gold | 1,000 × 1e18 | 100,000 (~2.3 days) |
 
-The dual-criterion design prevents whales from instantly reaching Gold through high liquidity, while linear `liquidityShare` in the score formula prevents sybil split attacks. Threshold values are subject to testnet calibration.
+The dual-criterion design prevents whales from instantly reaching Gold through high liquidity (a high-liquidity position could otherwise accumulate the score threshold in minutes), while linear `liquidityShare` in the score formula prevents sybil split attacks.
+
+Threshold values were calibrated via Python simulation (`scripts/sim/tier_calibration.py`). Calibration results:
+- Medium LP (10% pool share, medium volatility, 200-tick range) reaches Bronze in 33 min (blocks-gated)
+- Whale (50% pool share, narrow range, high volatility) reaches Gold in 2.3 days (blocks-gated, mitigation working)
+- Small LPs (2% pool share) are score-gated at higher tiers (acceptable design: requires consistent participation)
 
 ### Bonus Pool Source and Distribution
 

@@ -1,0 +1,6 @@
+profile,tier,intra_tier_share,standard_pool_usd,holdfast_direct_usd,holdfast_bonus_usd,aave_contribution_usd,holdfast_total_usd,delta_usd,delta_pct
+Mercenary (no tier),none,0.0,300.0,255.0,0.0,0.0,255.0,-45.0,-15.0
+"Bronze (1 of 50, 2%)",Bronze,0.02,300.0,255.0,1.8924,0.0024,256.89,-43.11,-14.37
+"Silver (1 of 10, 10%)",Silver,0.1,300.0,255.0,13.2465,0.0165,268.25,-31.75,-10.58
+"Silver (1 of 3, 30%)",Silver,0.3,300.0,255.0,39.7396,0.0496,294.74,-5.26,-1.75
+"Gold (1 of 3, 30%)",Gold,0.3,300.0,255.0,45.4167,0.0567,300.42,0.42,0.14

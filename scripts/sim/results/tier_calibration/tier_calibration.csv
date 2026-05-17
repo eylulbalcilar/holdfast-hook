@@ -1,0 +1,7 @@
+scenario,liquidity_share,volatility,tick_width,score_per_block,bronze_time,bronze_gate,bronze_blocks,silver_time,silver_gate,silver_blocks,gold_time,gold_gate,gold_blocks
+"Small LP (2%), narrow range, low vol",0.02,0.3,60,0.001453793223148086,3.8 h,score,6879,38.2 h,score,68786,15.9 days,score,687856
+"Small LP (2%), narrow range, high vol",0.02,1.0,60,0.004845977410493621,1.1 h,score,2064,11.5 h,score,20636,4.8 days,score,206357
+"Medium LP (10%), medium range, medium vol",0.1,0.6,200,0.011303122491236547,33.3 min,blocks,1000,5.6 h,blocks,10000,2.3 days,blocks,100000
+"Large LP (30%), wide range, low vol",0.3,0.3,1000,0.013025067080047211,33.3 min,blocks,1000,5.6 h,blocks,10000,2.3 days,blocks,100000
+"Whale (50%), narrow range, high vol",0.5,1.0,60,0.12114943526234054,33.3 min,blocks,1000,5.6 h,blocks,10000,2.3 days,blocks,100000
+Baseline (all factors = 1.0),1.0,1.0,1,0.9102392266268374,33.3 min,blocks,1000,5.6 h,blocks,10000,2.3 days,blocks,100000

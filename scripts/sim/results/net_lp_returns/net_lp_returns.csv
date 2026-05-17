@@ -1,6 +1,16 @@
-profile,tier,intra_tier_share,standard_pool_usd,holdfast_direct_usd,holdfast_bonus_usd,aave_contribution_usd,holdfast_total_usd,delta_usd,delta_pct
-Mercenary (no tier),none,0.0,300.0,255.0,0.0,0.0,255.0,-45.0,-15.0
-"Bronze (1 of 50, 2%)",Bronze,0.02,300.0,255.0,1.8924,0.0024,256.89,-43.11,-14.37
-"Silver (1 of 10, 10%)",Silver,0.1,300.0,255.0,13.2465,0.0165,268.25,-31.75,-10.58
-"Silver (1 of 3, 30%)",Silver,0.3,300.0,255.0,39.7396,0.0496,294.74,-5.26,-1.75
-"Gold (1 of 3, 30%)",Gold,0.3,300.0,255.0,45.4167,0.0567,300.42,0.42,0.14
+scenario,profile,tier,intra_tier_share,standard_pool_usd,holdfast_direct_usd,holdfast_bonus_usd,aave_contribution_usd,holdfast_total_usd,delta_usd,delta_pct
+baseline,Mercenary (no tier),none,0.0,300.0,255.0,0.0,0.0,255.0,-45.0,-15.0
+baseline,"Bronze (1 of 50, 2%)",Bronze,0.02,300.0,255.0,1.8924,0.0024,256.89,-43.11,-14.37
+baseline,"Silver (1 of 10, 10%)",Silver,0.1,300.0,255.0,13.2465,0.0165,268.25,-31.75,-10.58
+baseline,"Silver (1 of 3, 30%)",Silver,0.3,300.0,255.0,39.7396,0.0496,294.74,-5.26,-1.75
+baseline,"Gold (1 of 3, 30%)",Gold,0.3,300.0,255.0,45.4167,0.0567,300.42,0.42,0.14
+high_vol,Mercenary (no tier),none,0.0,300.0,255.0,0.0,0.0,255.0,-45.0,-15.0
+high_vol,"Bronze (1 of 50, 2%)",Bronze,0.02,300.0,255.0,3.1539,0.0039,258.15,-41.85,-13.95
+high_vol,"Silver (1 of 10, 10%)",Silver,0.1,300.0,255.0,22.0776,0.0276,277.08,-22.92,-7.64
+high_vol,"Silver (1 of 3, 30%)",Silver,0.3,300.0,255.0,66.2327,0.0827,321.23,21.23,7.08
+high_vol,"Gold (1 of 3, 30%)",Gold,0.3,300.0,255.0,75.6945,0.0945,330.69,30.69,10.23
+adjusted,Mercenary (no tier),none,0.0,300.0,240.0,0.0,0.0,240.0,-60.0,-20.0
+adjusted,"Bronze (1 of 50, 2%)",Bronze,0.02,300.0,240.0,3.1539,0.0039,243.15,-56.85,-18.95
+adjusted,"Silver (1 of 10, 10%)",Silver,0.1,300.0,240.0,22.0776,0.0276,262.08,-37.92,-12.64
+adjusted,"Silver (1 of 3, 30%)",Silver,0.3,300.0,240.0,66.2327,0.0827,306.23,6.23,2.08
+adjusted,"Gold (1 of 3, 30%)",Gold,0.3,300.0,240.0,75.6945,0.0945,315.69,15.69,5.23

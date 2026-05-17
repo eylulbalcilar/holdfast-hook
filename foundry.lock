@@ -1,1 +1,14 @@
-{}
+{
+  "lib/forge-std": {
+    "rev": "c90c02ffa470b46d92ffaab093baeb296300870b"
+  },
+  "lib/solady": {
+    "tag": {
+      "name": "v0.1.26",
+      "rev": "acd959aa4bd04720d640bf4e6a5c71037510cc4b"
+    }
+  },
+  "lib/v4-hooks-public": {
+    "rev": "b53aa1d80efc82c1df6632daa14d0fce14616c8e"
+  }
+}

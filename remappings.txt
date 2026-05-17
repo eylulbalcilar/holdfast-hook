@@ -6,3 +6,4 @@ v4-periphery/=lib/v4-hooks-public/lib/v4-periphery/src/
 @openzeppelin/contracts/=lib/v4-hooks-public/lib/openzeppelin-contracts/contracts/
 solmate/=lib/v4-hooks-public/lib/v4-core/lib/solmate/
 forge-std/=lib/forge-std/src/
+solady/=lib/solady/src/

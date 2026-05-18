@@ -87,7 +87,7 @@ IL = 2 × sqrt(priceRatio) / (1 + priceRatio) - 1
 
 IL is negative (representing loss). The realized-IL arm distributes its allocation proportional to the absolute value of IL incurred, across all active positions that have non-zero IL.
 
-The formula has been verified against the constant-product impermanent loss reference values (Uniswap research, Bancor documentation), and the Q64.96 integer implementation that will be used in `ScoreAccumulator.sol` agrees with the float reference to zero rounding error across 11 price scenarios. See `scripts/sim/results/realized_il_check/` for the reference table used by `test/unit/ScoreAccumulator.t.sol`.
+The formula has been verified against the constant-product impermanent loss reference values (Uniswap research, Bancor documentation), and is implemented in `ScoreAccumulator.sol` with 23 unit and fuzz tests; the Q64.96 integer implementation agrees with the float reference to zero rounding error across 11 price scenarios. See `scripts/sim/results/realized_il_check/` for the reference table used by `test/unit/ScoreAccumulator.t.sol`.
 
 ### Tier Thresholds
 
@@ -229,6 +229,14 @@ Uniswap v4's PoolManager uses ERC-6909 for internal accounting, making it the v4
 3. Wallet and infrastructure UX maturity
 
 An ERC-6909 variant could be added in a future version, particularly to optimize batch operations.
+
+### Solady FixedPointMathLib over Solmate
+
+The Uniswap v4-core dependency tree ships a minimal version of Solmate's FixedPointMathLib (only `mulWadDown`, `sqrt`, `rpow`). Holdfast's `ScoreAccumulator.calculateRangeNarrowness` requires natural logarithm (`lnWad`), which is not exposed in that minimal version.
+
+Solady was added as a top-level dependency (`forge install vectorized/solady`) and remapped via `solady/=lib/solady/src/`. Solady's `FixedPointMathLib.lnWad` provides the needed primitive with WAD-precision signed-fixed-point arithmetic, and Solady's `fullMulDiv` is also used in the Q64.96 integer path of `calculateRealizedIL`.
+
+Trade-off: an additional dependency, but the natural-log primitive is essential for the score formula and is not available in the v4-bundled Solmate. Solady is well-maintained, gas-optimized, and widely used in production Solidity codebases.
 
 ### Aave V3, Not a Mock
 

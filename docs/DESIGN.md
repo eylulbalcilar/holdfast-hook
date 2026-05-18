@@ -151,9 +151,11 @@ userILShare = (ilArmAllocation) × (|userIL| / sumOfAllIL)
 
 ### NFT Mechanics
 
-When a position first crosses Bronze threshold, an NFT is minted. Subsequent tier upgrades update the same tokenId's metadata pointer; new tokens are not minted on upgrade. The `_beforeTokenTransfer` override settles accrued rewards to the original owner before transfer.
+When a position first crosses the Bronze threshold, an NFT is minted. Subsequent tier upgrades update the same tokenId's metadata pointer; new tokens are not minted on upgrade. The `_update` override (OpenZeppelin v5 pattern) settles accrued rewards to the original owner during transfer.
 
 NFT serves as a claim accounting primitive: tier indicator, per-position isolated state, and transfer-time settlement hook. ERC-721 transferability is preserved as a standard property but is not the primary design intent.
+
+**Mint timing.** `HoldfastHook` calls `HoldfastNFT.mint(to, positionKey)` only when both `accumulatedScore >= BRONZE_THRESHOLD` AND `block.number - firstActiveBlock >= BRONZE_BLOCKS` are satisfied. Subsequent `upgradeTier(tokenId, newTier)` calls follow the same dual-criterion check at the Silver and Gold thresholds. The NFT contract itself does not enforce the dual criterion; see the Trust Boundary design decision.
 
 ### Position Lifecycle
 
@@ -186,6 +188,16 @@ struct PoolVolatility {
 
 mapping(PoolId => PoolVolatility) public volatility;
 ```
+
+`HoldfastNFT` maintains the per-token and inverse mappings used during mint, tier upgrade, and transfer settlement:
+
+```solidity
+mapping(uint256 => uint8) public tokenIdToTier;
+mapping(bytes32 => uint256) public positionKeyToTokenId;
+mapping(uint256 => bytes32) public tokenIdToPositionKey;
+```
+
+`tokenIdToPositionKey` is the reverse lookup consumed by `_update` to call `hook.settleOnTransfer(positionKey, from, to)` without requiring the hook to maintain a parallel index.
 
 Position key derivation:
 
@@ -225,7 +237,7 @@ Using `sqrt(liquidityShare)` would superficially reward small LPs but enables wh
 Uniswap v4's PoolManager uses ERC-6909 for internal accounting, making it the v4-native primitive. ERC-721 was selected for Holdfast for three reasons:
 
 1. Per-position isolated transferability (each NFT is independently transferable)
-2. The `_beforeTokenTransfer` override enables automatic accrual settlement, preventing accrual-theft attacks
+2. The `_update` override (OpenZeppelin v5) enables automatic accrual settlement, preventing accrual-theft attacks
 3. Wallet and infrastructure UX maturity
 
 An ERC-6909 variant could be added in a future version, particularly to optimize batch operations.
@@ -237,6 +249,38 @@ The Uniswap v4-core dependency tree ships a minimal version of Solmate's FixedPo
 Solady was added as a top-level dependency (`forge install vectorized/solady`) and remapped via `solady/=lib/solady/src/`. Solady's `FixedPointMathLib.lnWad` provides the needed primitive with WAD-precision signed-fixed-point arithmetic, and Solady's `fullMulDiv` is also used in the Q64.96 integer path of `calculateRealizedIL`.
 
 Trade-off: an additional dependency, but the natural-log primitive is essential for the score formula and is not available in the v4-bundled Solmate. Solady is well-maintained, gas-optimized, and widely used in production Solidity codebases.
+
+### OpenZeppelin v5 and `_update` Migration
+
+`HoldfastNFT` extends OpenZeppelin Contracts v5.6.1 (`ERC721`, `Ownable`). In v5, the legacy `_beforeTokenTransfer` and `_afterTokenTransfer` hooks were removed and consolidated into a single `_update(address to, uint256 tokenId, address auth)` override that returns the previous owner.
+
+Holdfast uses `_update` to invoke `IHoldfastHook.settleOnTransfer(positionKey, from, to)` on every non-mint transfer (including burns), preventing accrual-theft attacks. Mint is detected via `from == address(0)` after the `super._update` call and is intentionally skipped to avoid calling `settleOnTransfer` on a position that has no accrued state yet.
+
+OZ v5 also changed `Ownable` to require an `initialOwner` constructor parameter and replaced string revert reasons with custom errors (`OwnableUnauthorizedAccount`, `ERC721NonexistentToken`, etc.), which are used directly in `HoldfastNFT` tests.
+
+Trade-off: v5 is not API-compatible with v4-bundled OZ (which v4-hooks-public ships). The top-level `lib/openzeppelin-contracts` install at v5.6.1 supersedes the bundled version via remapping, ensuring a single OZ version is resolved at compile time.
+
+### Trust Boundary: Hook Authoritative, NFT Accounting Primitive
+
+`HoldfastNFT` is a passive accounting primitive. Tier eligibility (the dual criterion: `accumulatedScore >= threshold` AND `block.number - firstActiveBlock >= minBlocks`) is validated exclusively in `HoldfastHook`. The NFT contract trusts its bound hook to enforce these constraints before calling `mint` or `upgradeTier`.
+
+`HoldfastNFT` enforces the following invariants on its own:
+
+- Only the bound hook address can call `mint` and `upgradeTier` (`onlyHook` modifier)
+- The hook address can be set exactly once via `setHook` (only-owner, one-time bind)
+- `upgradeTier` rejects downgrades and any tier value outside `{TIER_SILVER, TIER_GOLD}` (Bronze is set only on mint)
+- A given `positionKey` can be minted at most once
+- `_update` calls `settleOnTransfer` on every non-mint transfer
+
+The NFT does not check the dual-criterion thresholds. If the hook is buggy and calls `upgradeTier(tokenId, TIER_GOLD)` before the block minimum is met, the NFT will accept the upgrade.
+
+Rationale:
+
+- **Single source of truth.** Tier logic exists in one place (`HoldfastHook`), simplifying audit surface and avoiding two diverging implementations of the dual criterion.
+- **Authorized caller.** The hook is already the only privileged caller; redundant checks in the NFT would duplicate logic without strengthening security against a non-hook attacker.
+- **Test compensation.** The hook test suite (Day 5+) is responsible for asserting the dual criterion: a whale-instant-Gold attempt test, a mint-timing test (no mint before Bronze threshold), and a dual-criterion test (neither criterion alone triggers mint or upgrade) are mandatory.
+
+If the hook implementation ever becomes shared across multiple NFT deployments or unauthorized callers, this trust assumption should be revisited and the NFT should accept and verify `firstActiveBlock` as a parameter.
 
 ### Aave V3, Not a Mock
 
@@ -320,10 +364,10 @@ Holdfast's contribution is the synthesis: IL-aware scoring + realized-IL compens
 |---|---|
 | 1-tick range farming | Logarithmic `rangeNarrowness` + minimum liquidity threshold |
 | Flash loan transient liquidity | `afterAddLiquidity` enforces a 1-block delay before score accrual |
-| NFT transfer accrual theft | `_beforeTokenTransfer` settles to the original owner |
+| NFT transfer accrual theft | `_update` (OZ v5) callback settles to the original owner |
 | Volatility manipulation (sandwich) | 10-observation ring buffer dampens single-swap impact |
 | Whale split sybil | Linear `liquidityShare` in score formula (formula-level protection) |
-| Whale-instant-Gold | Minimum active block requirement at each tier; 48-config sweep confirms all whale profiles blocks-gated (79.6x slowdown for worst case) |
+| Whale-instant-Gold | Minimum active block requirement at each tier; 48-config sweep confirms all whale profiles blocks-gated (79.6x slowdown for worst case); enforced in `HoldfastHook` before calling `mint` / `upgradeTier` (see Trust Boundary) |
 | Open/close farming | Streaks freeze rather than reset; no farming benefit |
 | Reentrancy on claim | ReentrancyGuard + checks-effects-interactions |
 | Aave withdraw failure | Try/catch with fallback path in the claim flow |
@@ -360,6 +404,8 @@ holdfast-hook/
 │   ├── HoldfastHook.sol
 │   ├── HoldfastNFT.sol
 │   ├── YieldRouter.sol
+│   ├── interfaces/
+│   │   └── IHoldfastHook.sol
 │   └── libraries/
 │       └── ScoreAccumulator.sol
 ├── test/

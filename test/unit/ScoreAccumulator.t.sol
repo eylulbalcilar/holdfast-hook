@@ -131,12 +131,12 @@ contract ScoreAccumulatorTest is Test {
     // ---------- fuzz ----------
 
     function testFuzz_realizedIL_neverPositive(uint160 entry, uint160 current) public pure {
-    // Bound to realistic sqrtPriceX96 range (typical LP token pairs)
-    entry = uint160(bound(uint256(entry), 1e24, 1e30));
-    current = uint160(bound(uint256(current), 1e24, 1e30));
-    int256 il = ScoreAccumulator.calculateRealizedIL(entry, current);
-    assertLe(il, 0);
-}
+        // Bound to realistic sqrtPriceX96 range (typical LP token pairs)
+        entry = uint160(bound(uint256(entry), 1e24, 1e30));
+        current = uint160(bound(uint256(current), 1e24, 1e30));
+        int256 il = ScoreAccumulator.calculateRealizedIL(entry, current);
+        assertLe(il, 0);
+    }
 
     // ---------- helpers ----------
 

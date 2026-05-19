@@ -9,6 +9,7 @@ import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapDelta.sol";
 import {ModifyLiquidityParams, SwapParams} from "v4-core/types/PoolOperation.sol";
+import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
 
 import {IHoldfastHook} from "./interfaces/IHoldfastHook.sol";
 import {HoldfastNFT} from "./HoldfastNFT.sol";
@@ -57,6 +58,7 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
     mapping(PoolId => PoolVolatility) public volatility;
 
     using PoolIdLibrary for PoolKey;
+    using StateLibrary for IPoolManager;
 
     HoldfastNFT public immutable nft;
 
@@ -120,13 +122,68 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
     }
 
     function _afterAddLiquidity(
-        address,
-        PoolKey calldata,
-        ModifyLiquidityParams calldata,
+        address sender,
+        PoolKey calldata key,
+        ModifyLiquidityParams calldata params,
         BalanceDelta,
         BalanceDelta,
         bytes calldata
     ) internal override returns (bytes4, BalanceDelta) {
+        // Defensive: only handle positive deltas. Removes go through afterRemoveLiquidity.
+        if (params.liquidityDelta <= 0) {
+            return (this.afterAddLiquidity.selector, BalanceDelta.wrap(0));
+        }
+
+        bytes32 positionKey = _positionKey(sender, params.tickLower, params.tickUpper, params.salt);
+        PositionStreak storage s = streaks[positionKey];
+
+        if (!s.isActive && s.firstActiveBlock == 0) {
+            // New position: cold init.
+            // Snapshot pool sqrtPriceX96 as IL baseline. firstActiveBlock anchors
+            // the dual-criterion tenure check. No NFT mint here: Bronze threshold
+            // is checked lazily on swap activity, not at position open.
+            (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(key.toId());
+            s.entrySqrtPriceX96 = sqrtPriceX96;
+            s.firstActiveBlock = block.number;
+            s.lastUpdateBlock = block.number;
+            s.isActive = true;
+
+            emit PositionOpened(
+                positionKey,
+                sender,
+                key.toId(),
+                params.tickLower,
+                params.tickUpper,
+                sqrtPriceX96,
+                block.number
+            );
+        } else if (!s.isActive && s.frozenAt > 0) {
+            // Re-entry: previously frozen position is reopened by the same owner with
+            // the same tick range. Streak resumes (accumulatedScore and currentTier
+            // preserved) but IL baseline resets per DESIGN.md "Position Lifecycle".
+            (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(key.toId());
+            s.entrySqrtPriceX96 = sqrtPriceX96;
+            s.firstActiveBlock = block.number;
+            s.lastUpdateBlock = block.number;
+            s.frozenAt = 0;
+            s.isActive = true;
+
+            emit PositionOpened(
+                positionKey,
+                sender,
+                key.toId(),
+                params.tickLower,
+                params.tickUpper,
+                sqrtPriceX96,
+                block.number
+            );
+        } else {
+            // Liquidity increase on an already-active position. Entry snapshot and
+            // firstActiveBlock are immutable for the position; only update the
+            // lazy-update cursor so the next score accrual integrates from now.
+            s.lastUpdateBlock = block.number;
+        }
+
         return (this.afterAddLiquidity.selector, BalanceDelta.wrap(0));
     }
 

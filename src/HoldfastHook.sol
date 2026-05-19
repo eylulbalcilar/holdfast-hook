@@ -232,6 +232,41 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
         positionKey; from; to;
     }
 
+    /// @notice Lazy tier evaluation: check the dual criterion and call into the NFT
+    ///         if a transition is warranted. Single source of truth for mint and
+    ///         upgrade gating; HoldfastNFT performs no redundant checks.
+    /// @dev Called from afterSwap (after score accrual) and beforeRemoveLiquidity
+    ///         (so a position settling its IL also realizes any pending tier crossing).
+    function _evaluateAndMaybeMint(bytes32 positionKey, address owner) internal {
+        PositionStreak storage s = streaks[positionKey];
+        if (s.firstActiveBlock == 0) return; // unknown position
+
+        uint256 blocksActive = block.number - s.firstActiveBlock;
+        uint8 nextTier = _evaluateNextTier(s.currentTier, s.accumulatedScore, blocksActive);
+        if (nextTier == s.currentTier) return; // no transition
+
+        if (s.currentTier == TIER_NONE) {
+            // First crossing: mint a Bronze NFT and record the tokenId.
+            // Note: nextTier may be Bronze, Silver, or Gold here (direct-jump cases).
+            // The NFT contract mints at Bronze; we then upgrade to nextTier if higher.
+            uint256 tokenId = nft.mint(owner, positionKey);
+            s.nftTokenId = tokenId;
+            s.currentTier = TIER_BRONZE;
+            emit TierMinted(positionKey, owner, tokenId);
+
+            if (nextTier > TIER_BRONZE) {
+                nft.upgradeTier(tokenId, nextTier);
+                s.currentTier = nextTier;
+                emit TierUpgraded(positionKey, tokenId, nextTier);
+            }
+        } else {
+            // Already minted: upgrade to nextTier.
+            nft.upgradeTier(s.nftTokenId, nextTier);
+            s.currentTier = nextTier;
+            emit TierUpgraded(positionKey, s.nftTokenId, nextTier);
+        }
+    }
+
     function _positionKey(address owner, int24 tickLower, int24 tickUpper, bytes32 salt)
         internal
         pure

@@ -65,4 +65,12 @@ contract HoldfastHookHarness is HoldfastHook {
     }
 
     function VOL_BUFFER_LEN_() external pure returns (uint8) { return VOL_BUFFER_LEN; }
+
+    function exposed_evaluateAndMaybeMint(bytes32 positionKey, address owner) external {
+        _evaluateAndMaybeMint(positionKey, owner);
+    }
+
+    function setStreakScore(bytes32 positionKey, uint256 score) external {
+        streaks[positionKey].accumulatedScore = score;
+    }
 }

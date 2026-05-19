@@ -5,7 +5,7 @@ import {BaseHook} from "v4-periphery/utils/BaseHook.sol";
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
-import {PoolId} from "v4-core/types/PoolId.sol";
+import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapDelta.sol";
 import {ModifyLiquidityParams, SwapParams} from "v4-core/types/PoolOperation.sol";
@@ -56,6 +56,8 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
     mapping(bytes32 => PositionStreak) public streaks;
     mapping(PoolId => PoolVolatility) public volatility;
 
+    using PoolIdLibrary for PoolKey;
+
     HoldfastNFT public immutable nft;
 
     event PositionOpened(
@@ -70,6 +72,7 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
 
     event TierMinted(bytes32 indexed positionKey, address indexed owner, uint256 tokenId);
     event TierUpgraded(bytes32 indexed positionKey, uint256 indexed tokenId, uint8 newTier);
+    event PoolInitialized(PoolId indexed poolId, uint160 sqrtPriceX96, int24 tick);
 
     constructor(IPoolManager _poolManager, HoldfastNFT _nft) BaseHook(_poolManager) {
         nft = _nft;
@@ -94,11 +97,25 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
         });
     }
 
-    function _afterInitialize(address, PoolKey calldata, uint160, int24)
+    function _afterInitialize(address, PoolKey calldata key, uint160 sqrtPriceX96, int24 tick)
         internal
         override
         returns (bytes4)
     {
+        PoolId poolId = key.toId();
+        PoolVolatility storage vol = volatility[poolId];
+
+        // Cold-start protection: seed the entire ring buffer with the initial sqrtPriceX96.
+        // Variance of 10 identical observations is 0, so cachedVolatility is implicitly 0
+        // until real swaps populate the buffer.
+        for (uint256 i = 0; i < VOL_BUFFER_LEN; i++) {
+            vol.recentPriceObservations[i] = sqrtPriceX96;
+        }
+        vol.cursor = 0;
+        vol.cachedVolatility = 0;
+        vol.lastVolUpdate = block.number;
+
+        emit PoolInitialized(poolId, sqrtPriceX96, tick);
         return this.afterInitialize.selector;
     }
 

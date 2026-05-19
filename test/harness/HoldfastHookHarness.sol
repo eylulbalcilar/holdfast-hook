@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: MIT
+pragma solidity ^0.8.26;
+
+import {HoldfastHook} from "../../src/HoldfastHook.sol";
+import {HoldfastNFT} from "../../src/HoldfastNFT.sol";
+import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
+
+/// @title HoldfastHookHarness
+/// @notice Test-only subclass that exposes HoldfastHook's internal pure helpers
+///         and tier constants. Production surface stays minimal; harness lives
+///         only under test/.
+contract HoldfastHookHarness is HoldfastHook {
+    constructor(IPoolManager _poolManager, HoldfastNFT _nft) HoldfastHook(_poolManager, _nft) {}
+
+    function exposed_positionKey(address owner, int24 tickLower, int24 tickUpper, bytes32 salt)
+        external
+        pure
+        returns (bytes32)
+    {
+        return _positionKey(owner, tickLower, tickUpper, salt);
+    }
+
+    function exposed_evaluateNextTier(uint8 currentTier, uint256 accumulatedScore, uint256 blocksActive)
+        external
+        pure
+        returns (uint8)
+    {
+        return _evaluateNextTier(currentTier, accumulatedScore, blocksActive);
+    }
+
+    // Constants re-exposed for assertions
+    function TIER_NONE_() external pure returns (uint8) { return TIER_NONE; }
+    function TIER_BRONZE_() external pure returns (uint8) { return TIER_BRONZE; }
+    function TIER_SILVER_() external pure returns (uint8) { return TIER_SILVER; }
+    function TIER_GOLD_() external pure returns (uint8) { return TIER_GOLD; }
+
+    function BRONZE_SCORE_() external pure returns (uint256) { return BRONZE_SCORE; }
+    function SILVER_SCORE_() external pure returns (uint256) { return SILVER_SCORE; }
+    function GOLD_SCORE_() external pure returns (uint256) { return GOLD_SCORE; }
+
+    function BRONZE_BLOCKS_() external pure returns (uint256) { return BRONZE_BLOCKS; }
+    function SILVER_BLOCKS_() external pure returns (uint256) { return SILVER_BLOCKS; }
+    function GOLD_BLOCKS_() external pure returns (uint256) { return GOLD_BLOCKS; }
+}

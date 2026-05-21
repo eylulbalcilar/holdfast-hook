@@ -11,6 +11,8 @@ import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapD
 import {ModifyLiquidityParams, SwapParams} from "v4-core/types/PoolOperation.sol";
 import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
 
+import {ScoreAccumulator} from "./libraries/ScoreAccumulator.sol";
+
 import {IHoldfastHook} from "./interfaces/IHoldfastHook.sol";
 import {HoldfastNFT} from "./HoldfastNFT.sol";
 
@@ -45,6 +47,7 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
         uint256 nftTokenId;
         uint128 frozenAt;
         bool isActive;
+        int256 realizedIL;
     }
 
     struct PoolVolatility {
@@ -74,6 +77,7 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
 
     event TierMinted(bytes32 indexed positionKey, address indexed owner, uint256 tokenId);
     event TierUpgraded(bytes32 indexed positionKey, uint256 indexed tokenId, uint8 newTier);
+    event RealizedILComputed(bytes32 indexed positionKey, int256 il, uint160 currentSqrtPriceX96);
     event PoolInitialized(PoolId indexed poolId, uint160 sqrtPriceX96, int24 tick);
 
     constructor(IPoolManager _poolManager, HoldfastNFT _nft) BaseHook(_poolManager) {
@@ -188,11 +192,29 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
     }
 
     function _beforeRemoveLiquidity(
-        address,
-        PoolKey calldata,
-        ModifyLiquidityParams calldata,
+        address sender,
+        PoolKey calldata key,
+        ModifyLiquidityParams calldata params,
         bytes calldata
     ) internal override returns (bytes4) {
+        bytes32 positionKey = _positionKey(sender, params.tickLower, params.tickUpper, params.salt);
+        PositionStreak storage s = streaks[positionKey];
+
+        // No streak (unknown position) or already frozen: nothing to compute.
+        if (s.firstActiveBlock == 0 || !s.isActive) {
+            return this.beforeRemoveLiquidity.selector;
+        }
+
+        // Read current pool price and compute realized IL against the entry baseline.
+        (uint160 currentSqrtPriceX96,,,) = poolManager.getSlot0(key.toId());
+        int256 il = ScoreAccumulator.calculateRealizedIL(s.entrySqrtPriceX96, currentSqrtPriceX96);
+        s.realizedIL = il;
+        emit RealizedILComputed(positionKey, il, currentSqrtPriceX96);
+
+        // Lazy tier evaluation: claim time may cross a tier threshold for an LP
+        // who has accrued enough score and tenure since the last interaction.
+        _evaluateAndMaybeMint(positionKey, sender);
+
         return this.beforeRemoveLiquidity.selector;
     }
 

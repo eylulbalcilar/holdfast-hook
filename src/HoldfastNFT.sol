@@ -73,7 +73,7 @@ contract HoldfastNFT is ERC721, Ownable {
         positionKeyToTokenId[positionKey] = tokenId;
         tokenIdToPositionKey[tokenId] = positionKey;
         tokenIdToTier[tokenId] = TIER_BRONZE;
-        _safeMint(to, tokenId);
+        _mint(to, tokenId);
         emit PositionMinted(tokenId, positionKey, to, TIER_BRONZE);
     }
 

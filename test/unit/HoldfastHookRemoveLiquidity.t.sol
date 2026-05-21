@@ -6,6 +6,7 @@ import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {PoolId} from "v4-core/types/PoolId.sol";
 import {ModifyLiquidityParams, SwapParams} from "v4-core/types/PoolOperation.sol";
 import {Constants} from "v4-core/../test/utils/Constants.sol";
+import {Position} from "v4-core/libraries/Position.sol";
 import {PoolSwapTest} from "v4-core/test/PoolSwapTest.sol";
 
 contract HoldfastHookRemoveLiquidityTest is HoldfastHookBase {
@@ -40,7 +41,7 @@ contract HoldfastHookRemoveLiquidityTest is HoldfastHookBase {
             ""
         );
         positionKey =
-            keccak256(abi.encode(address(modifyLiquidityRouter), TICK_LOWER, TICK_UPPER, bytes32(0)));
+            Position.calculatePositionKey(address(modifyLiquidityRouter), TICK_LOWER, TICK_UPPER, bytes32(0));
     }
 
     function _removePartial(int256 negDelta) internal {
@@ -135,9 +136,7 @@ contract HoldfastHookRemoveLiquidityTest is HoldfastHookBase {
         );
 
         // The unopened position key should have IL == 0 (default).
-        bytes32 unknownKey = keccak256(
-            abi.encode(address(modifyLiquidityRouter), TICK_LOWER, TICK_UPPER, bytes32(uint256(1)))
-        );
+        bytes32 unknownKey = Position.calculatePositionKey(address(modifyLiquidityRouter), TICK_LOWER, TICK_UPPER, bytes32(uint256(1)));
         assertEq(_readRealizedIL(unknownKey), int256(0));
     }
 

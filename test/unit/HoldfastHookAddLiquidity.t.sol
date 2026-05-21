@@ -8,6 +8,7 @@ import {Currency} from "v4-core/types/Currency.sol";
 import {IHooks} from "v4-core/interfaces/IHooks.sol";
 import {ModifyLiquidityParams} from "v4-core/types/PoolOperation.sol";
 import {Constants} from "v4-core/../test/utils/Constants.sol";
+import {Position} from "v4-core/libraries/Position.sol";
 import {TickMath} from "v4-core/libraries/TickMath.sol";
 
 contract HoldfastHookAddLiquidityTest is HoldfastHookBase {
@@ -49,7 +50,7 @@ contract HoldfastHookAddLiquidityTest is HoldfastHookBase {
     function _streakKey(int24 tickLower, int24 tickUpper, bytes32 salt) internal view returns (bytes32) {
         // The hook uses the router as `sender` since modifyLiquidityRouter is the
         // caller of PoolManager.unlock.
-        return keccak256(abi.encode(address(modifyLiquidityRouter), tickLower, tickUpper, salt));
+        return Position.calculatePositionKey(address(modifyLiquidityRouter), tickLower, tickUpper, salt);
     }
 
     function _readStreak(bytes32 key)

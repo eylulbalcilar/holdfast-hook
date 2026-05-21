@@ -6,6 +6,7 @@ import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {PoolId} from "v4-core/types/PoolId.sol";
 import {ModifyLiquidityParams} from "v4-core/types/PoolOperation.sol";
 import {Constants} from "v4-core/../test/utils/Constants.sol";
+import {Position} from "v4-core/libraries/Position.sol";
 
 /// @notice The 3 mandatory security tests that compensate for the Trust Boundary
 ///         design (HoldfastNFT does not enforce dual criterion; HoldfastHook is
@@ -57,7 +58,7 @@ contract HoldfastHookSecurityTest is HoldfastHookBase {
             ""
         );
         positionKey =
-            keccak256(abi.encode(address(modifyLiquidityRouter), TICK_LOWER, TICK_UPPER, bytes32(0)));
+            Position.calculatePositionKey(address(modifyLiquidityRouter), TICK_LOWER, TICK_UPPER, bytes32(0));
     }
 
     function _currentTier(bytes32 positionKey) internal view returns (uint8 tier) {

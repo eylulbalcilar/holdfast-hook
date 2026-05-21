@@ -11,6 +11,8 @@ import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapD
 import {ModifyLiquidityParams, SwapParams} from "v4-core/types/PoolOperation.sol";
 import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
 
+import {Position} from "v4-core/libraries/Position.sol";
+
 import {ScoreAccumulator} from "./libraries/ScoreAccumulator.sol";
 
 import {IHoldfastHook} from "./interfaces/IHoldfastHook.sol";
@@ -294,7 +296,10 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
         pure
         returns (bytes32)
     {
-        return keccak256(abi.encode(owner, tickLower, tickUpper, salt));
+        // Byte-identical with Uniswap v4's Position.calculatePositionKey so the
+        // same key can be passed to StateLibrary.getPositionLiquidity. See
+        // DESIGN.md: position key salt section.
+        return Position.calculatePositionKey(owner, tickLower, tickUpper, salt);
     }
 
     function _evaluateNextTier(uint8 currentTier, uint256 accumulatedScore, uint256 blocksActive)

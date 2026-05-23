@@ -80,6 +80,7 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
     event TierMinted(bytes32 indexed positionKey, address indexed owner, uint256 tokenId);
     event TierUpgraded(bytes32 indexed positionKey, uint256 indexed tokenId, uint8 newTier);
     event RealizedILComputed(bytes32 indexed positionKey, int256 il, uint160 currentSqrtPriceX96);
+    event PositionClosed(bytes32 indexed positionKey, address indexed owner, uint256 accumulatedScore, int256 realizedIL, uint128 frozenAt);
     event PoolInitialized(PoolId indexed poolId, uint160 sqrtPriceX96, int24 tick);
 
     constructor(IPoolManager _poolManager, HoldfastNFT _nft) BaseHook(_poolManager) {
@@ -221,13 +222,36 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
     }
 
     function _afterRemoveLiquidity(
-        address,
-        PoolKey calldata,
-        ModifyLiquidityParams calldata,
+        address sender,
+        PoolKey calldata key,
+        ModifyLiquidityParams calldata params,
         BalanceDelta,
         BalanceDelta,
         bytes calldata
     ) internal override returns (bytes4, BalanceDelta) {
+        bytes32 positionKey = _positionKey(sender, params.tickLower, params.tickUpper, params.salt);
+        PositionStreak storage s = streaks[positionKey];
+
+        // Unknown position (never opened through the hook): no-op.
+        if (s.firstActiveBlock == 0) {
+            return (this.afterRemoveLiquidity.selector, BalanceDelta.wrap(0));
+        }
+
+        // Authoritative residual liquidity read from PoolManager.
+        uint128 remaining = poolManager.getPositionLiquidity(key.toId(), positionKey);
+
+        if (remaining == 0) {
+            // Full closure: freeze the streak. Tier persists (no downgrade) and
+            // accumulatedScore is preserved so a future re-entry resumes the streak.
+            s.isActive = false;
+            s.frozenAt = uint128(block.number);
+            emit PositionClosed(positionKey, sender, s.accumulatedScore, s.realizedIL, uint128(block.number));
+        } else {
+            // Partial closure: liquidityShare in the score formula adjusts on the
+            // next afterSwap accrual. Only bump the lazy-update cursor here.
+            s.lastUpdateBlock = block.number;
+        }
+
         return (this.afterRemoveLiquidity.selector, BalanceDelta.wrap(0));
     }
 

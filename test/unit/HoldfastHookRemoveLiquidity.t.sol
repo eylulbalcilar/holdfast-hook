@@ -160,4 +160,147 @@ contract HoldfastHookRemoveLiquidityTest is HoldfastHookBase {
         assertEq(_readTier(positionKey), TIER_BRONZE, "remove should trigger Bronze mint");
         assertEq(nft.nextTokenId(), 2, "one NFT minted");
     }
+
+
+    // -----------------------------------------------------------------
+    // Full vs partial close
+    // -----------------------------------------------------------------
+
+    function _readActive(bytes32 key) internal view returns (bool active) {
+        (,,,,,,, active,) = harness.streaks(key);
+    }
+
+    function _readFrozenAt(bytes32 key) internal view returns (uint128 frozenAt) {
+        (,,,,,, frozenAt,,) = harness.streaks(key);
+    }
+
+    function _readScore(bytes32 key) internal view returns (uint256 score) {
+        (score,,,,,,,,) = harness.streaks(key);
+    }
+
+    function _readEntry(bytes32 key) internal view returns (uint160 entry) {
+        (,,, entry,,,,,) = harness.streaks(key);
+    }
+
+    function _readFirstActiveBlock(bytes32 key) internal view returns (uint256 fab) {
+        (,, fab,,,,,,) = harness.streaks(key);
+    }
+
+    function _readLastUpdateBlock(bytes32 key) internal view returns (uint256 lub) {
+        (, lub,,,,,,,) = harness.streaks(key);
+    }
+
+    event PositionClosed(
+        bytes32 indexed positionKey,
+        address indexed owner,
+        uint256 accumulatedScore,
+        int256 realizedIL,
+        uint128 frozenAt
+    );
+
+    /// @dev Full closure freezes the streak; tier and score preserved (no downgrade).
+    function test_remove_fullClose_freezesStreak() public {
+        bytes32 positionKey = _openPosition();
+        // Pre-seed score to model swap accrual.
+        harness.setStreakScore(positionKey, 50 * 1e18);
+
+        vm.roll(block.number + 500);
+        _removePartial(-LIQ_DELTA); // full liquidity withdrawal
+
+        assertFalse(_readActive(positionKey), "isActive must be false after full close");
+        assertEq(_readFrozenAt(positionKey), uint128(block.number), "frozenAt must be set to current block");
+        assertEq(_readScore(positionKey), 50 * 1e18, "accumulatedScore must persist");
+    }
+
+    function test_remove_fullClose_emitsPositionClosed() public {
+        bytes32 positionKey = _openPosition();
+        harness.setStreakScore(positionKey, 50 * 1e18);
+        vm.roll(block.number + 500);
+
+        vm.expectEmit(true, true, false, false, address(harness));
+        emit PositionClosed(positionKey, address(modifyLiquidityRouter), 0, 0, 0);
+
+        _removePartial(-LIQ_DELTA);
+    }
+
+    /// @dev Bronze-tier NFT survives full closure: tier does not downgrade.
+    function test_remove_fullClose_tierPersists() public {
+        bytes32 positionKey = _openPosition();
+        harness.setStreakScore(positionKey, BRONZE_SCORE);
+        vm.roll(block.number + BRONZE_BLOCKS);
+
+        // First remove triggers Bronze mint via beforeRemoveLiquidity lazy eval.
+        _removePartial(-LIQ_DELTA / 2);
+        assertEq(_readTier(positionKey), TIER_BRONZE);
+
+        // Now close fully. Tier must stay at Bronze, streak frozen.
+        _removePartial(-LIQ_DELTA / 2);
+        assertFalse(_readActive(positionKey));
+        assertEq(_readTier(positionKey), TIER_BRONZE, "tier must persist through full close");
+    }
+
+    /// @dev Partial closure does not freeze: streak remains active, only the
+    ///      lazy-update cursor advances.
+    function test_remove_partialClose_keepsStreakActive() public {
+        bytes32 positionKey = _openPosition();
+        uint256 fabBefore = _readFirstActiveBlock(positionKey);
+
+        vm.roll(block.number + 500);
+        _removePartial(-LIQ_DELTA / 4);
+
+        assertTrue(_readActive(positionKey), "isActive must remain true on partial close");
+        assertEq(_readFrozenAt(positionKey), 0, "frozenAt must remain zero");
+        assertEq(_readFirstActiveBlock(positionKey), fabBefore, "firstActiveBlock immutable");
+        assertEq(_readLastUpdateBlock(positionKey), block.number, "lastUpdateBlock advances to current");
+    }
+
+    // -----------------------------------------------------------------
+    // Re-entry after full close
+    // -----------------------------------------------------------------
+
+    /// @dev Re-opening a previously frozen position at the same tick range
+    ///      resumes the streak: accumulatedScore and currentTier are preserved
+    ///      while entrySqrtPriceX96 and firstActiveBlock are reset to current.
+    function test_remove_reentry_resumesStreak() public {
+        bytes32 positionKey = _openPosition();
+
+        // Mint Bronze and freeze.
+        harness.setStreakScore(positionKey, BRONZE_SCORE);
+        vm.roll(block.number + BRONZE_BLOCKS);
+        _removePartial(-LIQ_DELTA); // full close
+        assertFalse(_readActive(positionKey));
+        assertEq(_readTier(positionKey), TIER_BRONZE);
+        uint256 scoreAtFreeze = _readScore(positionKey);
+        uint160 entryAtFreeze = _readEntry(positionKey);
+
+        // Move forward a few blocks, then re-open the same position.
+        vm.roll(block.number + 100);
+        modifyLiquidityRouter.modifyLiquidity(
+            poolKey,
+            ModifyLiquidityParams({
+                tickLower: TICK_LOWER,
+                tickUpper: TICK_UPPER,
+                liquidityDelta: LIQ_DELTA,
+                salt: bytes32(0)
+            }),
+            ""
+        );
+
+        // Score and tier preserved.
+        assertEq(_readScore(positionKey), scoreAtFreeze, "score must persist across re-entry");
+        assertEq(_readTier(positionKey), TIER_BRONZE, "tier must persist across re-entry");
+
+        // Active again, frozen flag cleared.
+        assertTrue(_readActive(positionKey), "isActive must be true after re-entry");
+        assertEq(_readFrozenAt(positionKey), 0, "frozenAt must reset to zero");
+
+        // entrySqrtPriceX96 and firstActiveBlock reset to current.
+        // Entry value may equal old if pool price did not move; assert the field
+        // was rewritten by checking firstActiveBlock equals current block.
+        assertEq(_readFirstActiveBlock(positionKey), block.number, "firstActiveBlock reset to current block");
+        // Sanity: entry remains a valid (non-zero) sqrt price; under no swap it
+        // equals entryAtFreeze, which is fine.
+        assertGt(_readEntry(positionKey), 0);
+        entryAtFreeze; // silence unused warning
+    }
 }

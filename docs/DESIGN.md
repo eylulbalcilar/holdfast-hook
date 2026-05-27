@@ -32,23 +32,25 @@ UHI9 theme: "Impermanent Loss and Yield Systems"
 
 ```
         ┌──────────────────┐
-        │  HoldfastHook    │
+        │   HoldfastHook   │
         │  (v4 lifecycle)  │
         └────────┬─────────┘
                  │
-    ┌────────────┼────────────┐
-    │            │            │
-    ▼            ▼            ▼
-┌──────────────┐ ┌─────────┐ ┌────────────┐
-│ScoreAccumul. │ │HoldfastNFT│ │YieldRouter │
-│  (library)   │ │ (ERC-721) │ │ (Aave V3)  │
-└──────────────┘ └─────────┘ └─────┬──────┘
-                                    │
-                                    ▼
-                           ┌─────────────────┐
-                           │  Aave V3 Pool   │
-                           │ (Base Sepolia)  │
-                           └─────────────────┘
+     ┌───────────┼───────────┐
+     │           │           │
+     ▼           ▼           ▼
+┌─────────┐ ┌─────────┐ ┌─────────┐
+│  Score  │ │Holdfast │ │ Yield   │
+│ Accumul.│ │  NFT    │ │ Router  │
+│(library)│ │(ERC-721)│ │(Aave V3)│
+└─────────┘ └─────────┘ └────┬────┘
+                             │
+                             ▼
+                       ┌───────────┐
+                       │  Aave V3  │
+                       │   Pool    │
+                       │(Base Sep.)│
+                       └───────────┘
 ```
 
 ### Contracts
@@ -107,6 +109,55 @@ Threshold values were calibrated via Python simulations under `scripts/sim/`, wi
 - **Whale-instant-Gold mitigation sweep** across 48 whale configurations (`whale_instant_gold/`): all configurations blocks-gated at Gold, 79.6x slowdown for the worst-case whale (99% liquidity share, 2.0x volatility, 10-tick range).
 - **Net LP returns** across three parameter regimes (`net_lp_returns/`): mechanism is volatility-sensitive; Gold premium ranges from +0.14% (low-vol baseline) to +10.23% (high-vol pool). See Net LP Returns section.
 - **Realized IL formula sanity check** (`realized_il_check/`): formula matches constant-product reference values; Q64.96 integer path agrees with float reference to zero rounding error across 11 price scenarios.
+
+### Swap Hook Mechanics
+
+The score accumulator and bonus pool are updated on every swap. Three design parameters govern this path.
+
+**Fee mechanism: manual carve-out in `afterSwap`.**
+
+Holdfast does not modify the swapper-facing fee. The pool charges its native fee tier unchanged. In `afterSwap`, the hook reads the LP fee component from `BalanceDelta` and routes `redistributionRate × volatilityMultiplier × poolFee` to the bonus pool by returning an `AFTER_SWAP_RETURNS_DELTA`. The remaining `(1 - redistributionRate × volatilityMultiplier)` of the fee is distributed natively by the PoolManager to in-range LPs. This requires the `AFTER_SWAP_RETURNS_DELTA` permission flag and is compatible with any static fee tier (500, 3000, 10000 bps); the pool is not required to be initialized in dynamic-fee mode.
+
+Rejected alternative: setting a dynamic fee via `LPFeeLibrary` in `beforeSwap`. Rejected because it would either inflate the swapper-facing fee (violating the "swap costs remain unchanged" positioning) or require pools to be initialized in dynamic-fee mode (restricting deployment surface). The carve-out path keeps the hook composable with arbitrary existing pools.
+
+**Volatility factor: variance of consecutive `sqrtPrice` ratios.**
+
+The 10-observation ring buffer is consumed in `ScoreAccumulator.calculateVolatilityFactor` (pure):
+
+1. Compute 9 consecutive ratios `ratio_i = sqrtPrice[i+1] / sqrtPrice[i]` in WAD scale.
+2. Compute mean and population variance of the 9 ratios (variance is in WAD squared).
+3. Multiply variance by 4 to convert sqrtPrice variance to price variance (`d(p)/p ≈ 2·d(sqrtP)/sqrtP`).
+4. Divide by WAD to bring back to WAD scale, multiply by `SCALE_FACTOR` (calibration constant).
+5. Cap at `2 × WAD` (200%).
+
+`SCALE_FACTOR` is initialized at `1e18` and calibrated in a follow-up Python sim such that ~20% annualized historical volatility maps to `~1.0 × WAD`.
+
+Rejected alternative: variance of log returns. Rejected on gas grounds; `lnWad` costs 500-800 gas per call, and `afterSwap` invokes 9 of them per swap (~5-7k gas overhead on every trade). Per-swap movements in concentrated-liquidity pools are typically below 5%, where `ln(1+x) ≈ x` and the ratio-variance proxy tracks log-variance to within tolerance acceptable for a score weighting.
+
+Rejected alternative: max-min range over the buffer. Rejected because a single outlier observation dominates the window, exposing a manipulation surface; also violates the DESIGN.md semantic ("variance of the last 10 swap prices").
+
+Edge cases:
+
+- Identical observations across the buffer (a freshly seeded pool or a dormant pool): variance = 0, `volatilityFactor` = 0, block score contribution = 0. Correct behavior.
+- Buffer is pre-seeded with the initial `sqrtPriceX96` across all 10 slots in `afterInitialize` (Day 5-6, lifecycle tests passing), so the first swap produces low-variance output rather than a cold-start error.
+
+**Volatility multiplier: piecewise linear, capped band.**
+
+The bonus pool funding multiplier is a piecewise function of `volatilityFactor` (WAD-scaled):
+
+| volatilityFactor band | volatilityMultiplier |
+|---|---|
+| `≤ 0.5 × WAD` | `1.0 × WAD` (flat) |
+| `0.5 × WAD < x < 1.5 × WAD` | linear interpolation between `1.0 × WAD` and `1.5 × WAD` |
+| `≥ 1.5 × WAD` | `1.5 × WAD` (cap) |
+
+Closed form for the linear band:
+
+```
+multiplier = WAD + ((volatilityFactor - 0.5 × WAD) × 0.5 × WAD) / WAD
+```
+
+Rejected alternative: pure linear from `0` upwards. Rejected because it would push `multiplier > 1.0×` in low-volatility regimes, inflating fee redistribution on stable-pair-like flow where the mechanism is not intended to be active. The flat 1.0× floor below `0.5 × WAD` keeps the hook a no-op on low-volatility pools (consistent with the Limitations section).
 
 ### Bonus Pool Source and Distribution
 

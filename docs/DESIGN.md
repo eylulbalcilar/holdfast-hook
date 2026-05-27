@@ -53,7 +53,7 @@ UHI9 theme: "Impermanent Loss and Yield Systems"
 
 ### Contracts
 
-1. **HoldfastHook.sol**: v4 lifecycle integration (beforeInitialize, afterAddLiquidity, beforeSwap, afterSwap, afterRemoveLiquidity)
+1. **HoldfastHook.sol**: v4 lifecycle integration (afterInitialize, afterAddLiquidity, beforeRemoveLiquidity, afterRemoveLiquidity, beforeSwap, afterSwap)
 2. **HoldfastNFT.sol**: ERC-721 with mutable metadata, IPFS pointers for three static tier images
 3. **ScoreAccumulator.sol**: Pure library for score calculation and realized IL math
 4. **YieldRouter.sol**: Aave V3 supply/withdraw operations, aToken accounting
@@ -175,6 +175,7 @@ struct PositionStreak {
     uint256 nftTokenId;
     uint128 frozenAt;
     bool isActive;
+    int256 realizedIL;              // computed at closure (beforeRemoveLiquidity), consumed by the realized-IL arm
 }
 
 mapping(bytes32 => PositionStreak) public streaks;
@@ -202,8 +203,11 @@ mapping(uint256 => bytes32) public tokenIdToPositionKey;
 Position key derivation:
 
 ```solidity
-positionKey = keccak256(abi.encode(owner, tickLower, tickUpper, salt))
+positionKey = Position.calculatePositionKey(owner, tickLower, tickUpper, salt)
+//          = keccak256(abi.encodePacked(owner, tickLower, tickUpper, salt))
 ```
+
+`salt` is passed through from Uniswap v4's `ModifyLiquidityParams.salt`, enabling the same owner to maintain multiple positions with the same tick range. The key layout is byte-identical to v4-core's `Position.calculatePositionKey`, so the same value indexes both the hook's streak mapping and Uniswap's internal position state (consumed via `StateLibrary.getPositionLiquidity` in `afterRemoveLiquidity`).
 
 ## Gas Optimization: Lazy Update Pattern
 

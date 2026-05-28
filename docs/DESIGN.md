@@ -120,15 +120,17 @@ Holdfast does not modify the swapper-facing fee. The pool charges its native fee
 
 Rejected alternative: setting a dynamic fee via `LPFeeLibrary` in `beforeSwap`. Rejected because it would either inflate the swapper-facing fee (violating the "swap costs remain unchanged" positioning) or require pools to be initialized in dynamic-fee mode (restricting deployment surface). The carve-out path keeps the hook composable with arbitrary existing pools.
 
-**Volatility factor: variance of consecutive `sqrtPrice` ratios.**
+**Volatility factor: mean squared deviation of `sqrtPrice` ratios from no-change.**
 
 The 10-observation ring buffer is consumed in `ScoreAccumulator.calculateVolatilityFactor` (pure):
 
 1. Compute 9 consecutive ratios `ratio_i = sqrtPrice[i+1] / sqrtPrice[i]` in WAD scale.
-2. Compute mean and population variance of the 9 ratios (variance is in WAD squared).
-3. Multiply variance by 4 to convert sqrtPrice variance to price variance (`d(p)/p ≈ 2·d(sqrtP)/sqrtP`).
-4. Divide by WAD to bring back to WAD scale, multiply by `SCALE_FACTOR` (calibration constant).
-5. Cap at `2 × WAD` (200%).
+2. For each ratio compute its deviation from `WAD` (the no-change point, ratio = 1.0), square it, and normalize back to WAD scale by dividing by `WAD`. Average the 9 normalized squared deviations.
+3. Multiply by 4 to convert sqrtPrice deviation to price deviation (`d(p)/p approx 2 * d(sqrtP)/sqrtP`).
+4. Multiply by `SCALE_FACTOR` (calibration constant); the value is already WAD-scaled.
+5. Cap at `2 * WAD` (200%).
+
+The deviation is measured from `WAD` rather than the sample mean so that a steady price trend still registers as volatility: a classic mean-relative variance would report zero for a constant per-swap drift, but such drift still drives impermanent loss, so the no-change reference is the IL-consistent choice.
 
 `SCALE_FACTOR` is initialized at `1e18` and calibrated in a follow-up Python sim such that ~20% annualized historical volatility maps to `~1.0 × WAD`.
 

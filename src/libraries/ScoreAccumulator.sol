@@ -14,6 +14,14 @@ library ScoreAccumulator {
 
     error InvalidTickRange();
     error InvalidSqrtPrice();
+    error ZeroSqrtPriceObservation();
+
+    /// @notice Calibration scalar applied to raw variance before WAD normalization.
+    /// @dev Initial placeholder. Calibrated such that ~20% annualized historical
+    ///      volatility maps to ~1.0 WAD. Subject to refinement via scripts/sim/.
+    uint256 internal constant SCALE_FACTOR = 1e18;
+
+    uint256 internal constant MAX_VOLATILITY_FACTOR = 2 * WAD;
 
     /// @notice Per-block score contribution for a position.
     function calculateBlockScore(
@@ -34,6 +42,51 @@ library ScoreAccumulator {
         uint256 width = uint256(int256(tickUpper) - int256(tickLower)) + 2;
         int256 lnResult = FixedPointMathLib.lnWad(int256(width * WAD));
         narrowness = (WAD * WAD) / uint256(lnResult);
+    }
+
+    /// @notice Volatility factor derived from 10 consecutive sqrtPriceX96 observations.
+    /// @dev Variance of 9 consecutive sqrtPrice ratios, scaled to price variance
+    ///      via the d(p)/p ~= 2 * d(sqrtP)/sqrtP identity. WAD-scaled, capped at 2*WAD.
+    /// @param observations Ring buffer ordered oldest to newest (caller responsibility).
+    /// @return volatilityFactor WAD-scaled volatility, in [0, 2*WAD].
+    function calculateVolatilityFactor(
+        uint160[10] memory observations
+    ) internal pure returns (uint256 volatilityFactor) {
+        // 1. Compute 9 consecutive sqrtPrice ratios in WAD scale.
+        uint256[9] memory ratios;
+        for (uint256 i = 0; i < 9; i++) {
+            uint256 prev = uint256(observations[i]);
+            uint256 next = uint256(observations[i + 1]);
+            if (prev == 0) revert ZeroSqrtPriceObservation();
+            ratios[i] = FixedPointMathLib.fullMulDiv(next, WAD, prev);
+        }
+
+        // 2. Mean of the 9 ratios.
+        uint256 sum;
+        for (uint256 i = 0; i < 9; i++) {
+            sum += ratios[i];
+        }
+        uint256 mean = sum / 9;
+
+        // 3. Population variance in WAD squared.
+        uint256 sumSquaredDeviations;
+        for (uint256 i = 0; i < 9; i++) {
+            uint256 diff = ratios[i] >= mean ? ratios[i] - mean : mean - ratios[i];
+            sumSquaredDeviations += diff * diff;
+        }
+        uint256 variance = sumSquaredDeviations / 9;
+
+        // 4. sqrtPrice variance to price variance: multiply by 4.
+        //    d(p)/p ~= 2 * d(sqrtP)/sqrtP, so Var(price) ~= 4 * Var(sqrtPrice ratio).
+        variance *= 4;
+
+        // 5. WAD squared to WAD, apply SCALE_FACTOR.
+        volatilityFactor = FixedPointMathLib.fullMulDiv(variance, SCALE_FACTOR, WAD);
+
+        // 6. Cap at 2 * WAD.
+        if (volatilityFactor > MAX_VOLATILITY_FACTOR) {
+            volatilityFactor = MAX_VOLATILITY_FACTOR;
+        }
     }
 
     /// @notice Realized IL between entry and current price.

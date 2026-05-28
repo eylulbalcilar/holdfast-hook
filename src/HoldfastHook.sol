@@ -166,6 +166,7 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
             s.entrySqrtPriceX96 = sqrtPriceX96;
             s.firstActiveBlock = block.number;
             s.lastUpdateBlock = block.number;
+            s.lastGlobalScoreSnapshot = globalScorePerLiquidity[key.toId()];
             s.isActive = true;
 
             emit PositionOpened(
@@ -186,6 +187,7 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
             s.firstActiveBlock = block.number;
             s.lastUpdateBlock = block.number;
             s.frozenAt = 0;
+            s.lastGlobalScoreSnapshot = globalScorePerLiquidity[key.toId()];
             s.isActive = true;
 
             emit PositionOpened(
@@ -201,6 +203,7 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
             // Liquidity increase on an already-active position. Entry snapshot and
             // firstActiveBlock are immutable for the position; only update the
             // lazy-update cursor so the next score accrual integrates from now.
+            s.lastGlobalScoreSnapshot = globalScorePerLiquidity[key.toId()];
             s.lastUpdateBlock = block.number;
         }
 
@@ -226,6 +229,14 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
         int256 il = ScoreAccumulator.calculateRealizedIL(s.entrySqrtPriceX96, currentSqrtPriceX96);
         s.realizedIL = il;
         emit RealizedILComputed(positionKey, il, currentSqrtPriceX96);
+
+        // Settle accrued score with the still-current liquidity before any removal,
+        // then advance the snapshot (Curve-gauge lazy update).
+        {
+            uint128 liq = poolManager.getPositionLiquidity(key.toId(), positionKey);
+            uint256 narrowness = ScoreAccumulator.calculateRangeNarrowness(params.tickLower, params.tickUpper);
+            _settlePositionScore(positionKey, key.toId(), liq, narrowness);
+        }
 
         // Lazy tier evaluation: claim time may cross a tier threshold for an LP
         // who has accrued enough score and tenure since the last interaction.
@@ -352,6 +363,24 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
     ///         upgrade gating; HoldfastNFT performs no redundant checks.
     /// @dev Called from afterSwap (after score accrual) and beforeRemoveLiquidity
     ///         (so a position settling its IL also realizes any pending tier crossing).
+    /// @notice Lazy Curve-gauge settle: fold the pool accumulator delta into the
+    ///         position score, weighted by liquidity and rangeNarrowness, then advance
+    ///         the per-position snapshot. Matches the eager per-block sum.
+    function _settlePositionScore(
+        bytes32 positionKey,
+        PoolId poolId,
+        uint128 liquidity,
+        uint256 rangeNarrowness
+    ) internal {
+        PositionStreak storage s = streaks[positionKey];
+        uint256 globalNow = globalScorePerLiquidity[poolId];
+        uint256 delta = globalNow - s.lastGlobalScoreSnapshot;
+        if (delta > 0 && liquidity > 0) {
+            s.accumulatedScore += (uint256(liquidity) * delta / WAD) * rangeNarrowness / WAD;
+        }
+        s.lastGlobalScoreSnapshot = globalNow;
+    }
+
     function _evaluateAndMaybeMint(bytes32 positionKey, address owner) internal {
         PositionStreak storage s = streaks[positionKey];
         if (s.firstActiveBlock == 0) return; // unknown position

@@ -40,6 +40,12 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
 
     uint8 internal constant VOL_BUFFER_LEN = 10;
 
+    uint256 internal constant WAD = 1e18;
+    uint256 internal constant REDISTRIBUTION_RATE_DEFAULT = 15e16;
+    uint256 internal constant VOL_MULT_LOWER = 5e17;
+    uint256 internal constant VOL_MULT_UPPER = 15e17;
+    uint256 internal constant VOL_MULT_MAX = 15e17;
+
     struct PositionStreak {
         uint256 accumulatedScore;
         uint256 lastUpdateBlock;
@@ -63,6 +69,9 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
     mapping(bytes32 => PositionStreak) public streaks;
     mapping(PoolId => PoolVolatility) public volatility;
     mapping(PoolId => uint256) public globalScorePerLiquidity; // Curve gauge-style pool-level accumulator, incremented per swap
+    mapping(PoolId => uint256) public lastGlobalScoreUpdateBlock;
+    mapping(PoolId => uint256) public redistributionRate;
+    uint256 public bonusPoolUSDC;
 
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
@@ -125,6 +134,8 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
         vol.cursor = 0;
         vol.cachedVolatility = 0;
         vol.lastVolUpdate = block.number;
+        redistributionRate[poolId] = REDISTRIBUTION_RATE_DEFAULT;
+        lastGlobalScoreUpdateBlock[poolId] = block.number;
 
         emit PoolInitialized(poolId, sqrtPriceX96, tick);
         return this.afterInitialize.selector;
@@ -267,12 +278,66 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
 
     function _afterSwap(
         address,
-        PoolKey calldata,
-        SwapParams calldata,
+        PoolKey calldata key,
+        SwapParams calldata params,
         BalanceDelta,
         bytes calldata
     ) internal override returns (bytes4, int128) {
+        PoolId poolId = key.toId();
+        uint256 vf = _updateVolatility(poolId);
+        _advanceGlobalScore(poolId, vf);
+        bonusPoolUSDC += _bonusContribution(poolId, key.fee, params.amountSpecified, vf);
         return (this.afterSwap.selector, 0);
+    }
+
+    function _updateVolatility(PoolId poolId) internal returns (uint256 vf) {
+        PoolVolatility storage vol = volatility[poolId];
+        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
+        vol.recentPriceObservations[vol.cursor] = sqrtPriceX96;
+        vol.cursor = uint8((vol.cursor + 1) % VOL_BUFFER_LEN);
+        uint160[10] memory ordered = _orderedObservations(vol);
+        vf = ScoreAccumulator.calculateVolatilityFactor(ordered);
+        vol.cachedVolatility = vf;
+        vol.lastVolUpdate = block.number;
+    }
+
+    function _advanceGlobalScore(PoolId poolId, uint256 vf) internal {
+        uint256 totalLiquidity = poolManager.getLiquidity(poolId);
+        uint256 blocksDelta = block.number - lastGlobalScoreUpdateBlock[poolId];
+        if (totalLiquidity > 0 && blocksDelta > 0 && vf > 0) {
+            globalScorePerLiquidity[poolId] += (vf * blocksDelta * WAD) / totalLiquidity;
+        }
+        lastGlobalScoreUpdateBlock[poolId] = block.number;
+    }
+
+    function _bonusContribution(PoolId poolId, uint24 fee, int256 amt, uint256 vf)
+        internal view returns (uint256)
+    {
+        uint256 m = _volatilityMultiplier(vf);
+        uint256 a = amt < 0 ? uint256(-amt) : uint256(amt);
+        uint256 poolFeeWad = uint256(fee) * WAD / 1e6;
+        return (a * poolFeeWad / WAD) * (redistributionRate[poolId] * m / WAD) / WAD;
+    }
+
+    function _orderedObservations(PoolVolatility storage vol)
+        internal
+        view
+        returns (uint160[10] memory ordered)
+    {
+        uint8 c = vol.cursor;
+        for (uint256 i = 0; i < VOL_BUFFER_LEN; i++) {
+            ordered[i] = uint160(vol.recentPriceObservations[(c + i) % VOL_BUFFER_LEN]);
+        }
+    }
+
+    function _volatilityMultiplier(uint256 volatilityFactor)
+        internal
+        pure
+        returns (uint256)
+    {
+        if (volatilityFactor <= VOL_MULT_LOWER) return WAD;
+        if (volatilityFactor >= VOL_MULT_UPPER) return VOL_MULT_MAX;
+        return WAD + ((volatilityFactor - VOL_MULT_LOWER) * 5e17) / WAD;
     }
 
     /// @inheritdoc IHoldfastHook

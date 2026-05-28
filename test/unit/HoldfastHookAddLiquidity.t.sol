@@ -59,6 +59,7 @@ contract HoldfastHookAddLiquidityTest is HoldfastHookBase {
         returns (
             uint256 accumulatedScore,
             uint256 lastUpdateBlock,
+            uint256 lastGlobalScoreSnapshot,
             uint256 firstActiveBlock,
             uint160 entrySqrtPriceX96,
             uint8 currentTier,
@@ -83,6 +84,7 @@ contract HoldfastHookAddLiquidityTest is HoldfastHookBase {
         (
             uint256 accumulatedScore,
             uint256 lastUpdateBlock,
+            ,
             uint256 firstActiveBlock,
             uint160 entrySqrtPriceX96,
             uint8 currentTier,
@@ -141,7 +143,7 @@ contract HoldfastHookAddLiquidityTest is HoldfastHookBase {
         _addLiq(TICK_LOWER, TICK_UPPER, LIQ_DELTA, bytes32(0));
 
         bytes32 key = _streakKey(TICK_LOWER, TICK_UPPER, bytes32(0));
-        (,, uint256 firstActiveBlockBefore, uint160 entryBefore,,,,,) = _readStreak(key);
+        (,,, uint256 firstActiveBlockBefore, uint160 entryBefore,,,,,) = _readStreak(key);
 
         // Advance time and add more liquidity to the SAME position key.
         vm.roll(500);
@@ -150,6 +152,7 @@ contract HoldfastHookAddLiquidityTest is HoldfastHookBase {
         (
             ,
             uint256 lastUpdateBlock,
+            ,
             uint256 firstActiveBlockAfter,
             uint160 entryAfter,
             ,
@@ -179,8 +182,8 @@ contract HoldfastHookAddLiquidityTest is HoldfastHookBase {
         bytes32 k1 = _streakKey(-60, 60, bytes32(0));
         bytes32 k2 = _streakKey(-120, 120, bytes32(0));
 
-        (,, uint256 fab1,,,,,,) = _readStreak(k1);
-        (,, uint256 fab2,,,,,,) = _readStreak(k2);
+        (,,, uint256 fab1,,,,,,) = _readStreak(k1);
+        (,,, uint256 fab2,,,,,,) = _readStreak(k2);
 
         assertEq(fab1, 100);
         assertEq(fab2, 200);
@@ -196,8 +199,8 @@ contract HoldfastHookAddLiquidityTest is HoldfastHookBase {
         bytes32 k1 = _streakKey(TICK_LOWER, TICK_UPPER, bytes32(uint256(1)));
         bytes32 k2 = _streakKey(TICK_LOWER, TICK_UPPER, bytes32(uint256(2)));
 
-        (,, uint256 fab1,,,,,,) = _readStreak(k1);
-        (,, uint256 fab2,,,,,,) = _readStreak(k2);
+        (,,, uint256 fab1,,,,,,) = _readStreak(k1);
+        (,,, uint256 fab2,,,,,,) = _readStreak(k2);
 
         assertEq(fab1, 100);
         assertEq(fab2, 200);

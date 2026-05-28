@@ -43,6 +43,7 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
     struct PositionStreak {
         uint256 accumulatedScore;
         uint256 lastUpdateBlock;
+        uint256 lastGlobalScoreSnapshot; // global accumulator value at last position interaction (lazy update)
         uint256 firstActiveBlock;
         uint160 entrySqrtPriceX96;
         uint8 currentTier;
@@ -61,6 +62,7 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
 
     mapping(bytes32 => PositionStreak) public streaks;
     mapping(PoolId => PoolVolatility) public volatility;
+    mapping(PoolId => uint256) public globalScorePerLiquidity; // Curve gauge-style pool-level accumulator, incremented per swap
 
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;

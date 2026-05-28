@@ -58,11 +58,11 @@ contract HoldfastHookRemoveLiquidityTest is HoldfastHookBase {
     }
 
     function _readRealizedIL(bytes32 key) internal view returns (int256 il) {
-        (,,,,,,,, il) = harness.streaks(key);
+        (,,,,,,,,, il) = harness.streaks(key);
     }
 
     function _readTier(bytes32 key) internal view returns (uint8 tier) {
-        (,,,, tier,,,,) = harness.streaks(key);
+        (,,,,, tier,,,,) = harness.streaks(key);
     }
 
     // -----------------------------------------------------------------
@@ -167,27 +167,27 @@ contract HoldfastHookRemoveLiquidityTest is HoldfastHookBase {
     // -----------------------------------------------------------------
 
     function _readActive(bytes32 key) internal view returns (bool active) {
-        (,,,,,,, active,) = harness.streaks(key);
+        (,,,,,,,, active,) = harness.streaks(key);
     }
 
     function _readFrozenAt(bytes32 key) internal view returns (uint128 frozenAt) {
-        (,,,,,, frozenAt,,) = harness.streaks(key);
+        (,,,,,,, frozenAt,,) = harness.streaks(key);
     }
 
     function _readScore(bytes32 key) internal view returns (uint256 score) {
-        (score,,,,,,,,) = harness.streaks(key);
+        (score,,,,,,,,,) = harness.streaks(key);
     }
 
     function _readEntry(bytes32 key) internal view returns (uint160 entry) {
-        (,,, entry,,,,,) = harness.streaks(key);
+        (,,,, entry,,,,,) = harness.streaks(key);
     }
 
     function _readFirstActiveBlock(bytes32 key) internal view returns (uint256 fab) {
-        (,, fab,,,,,,) = harness.streaks(key);
+        (,,, fab,,,,,,) = harness.streaks(key);
     }
 
     function _readLastUpdateBlock(bytes32 key) internal view returns (uint256 lub) {
-        (, lub,,,,,,,) = harness.streaks(key);
+        (, lub,,,,,,,,) = harness.streaks(key);
     }
 
     event PositionClosed(

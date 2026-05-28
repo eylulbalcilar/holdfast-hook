@@ -61,26 +61,22 @@ library ScoreAccumulator {
             ratios[i] = FixedPointMathLib.fullMulDiv(next, WAD, prev);
         }
 
-        // 2. Mean of the 9 ratios.
-        uint256 sum;
-        for (uint256 i = 0; i < 9; i++) {
-            sum += ratios[i];
-        }
-        uint256 mean = sum / 9;
-
-        // 3. Population variance in WAD squared.
+        // 2. Mean squared deviation of each ratio from WAD (no-change reference).
+        //    WAD reference (not the sample mean) so a steady trend still registers
+        //    as volatility, consistent with IL being driven by price-level change.
         uint256 sumSquaredDeviations;
         for (uint256 i = 0; i < 9; i++) {
-            uint256 diff = ratios[i] >= mean ? ratios[i] - mean : mean - ratios[i];
-            sumSquaredDeviations += diff * diff;
+            uint256 diff = ratios[i] >= WAD ? ratios[i] - WAD : WAD - ratios[i];
+            // Normalize each squared deviation (WAD^2) back to WAD scale.
+            sumSquaredDeviations += (diff * diff) / WAD;
         }
         uint256 variance = sumSquaredDeviations / 9;
 
-        // 4. sqrtPrice variance to price variance: multiply by 4.
-        //    d(p)/p ~= 2 * d(sqrtP)/sqrtP, so Var(price) ~= 4 * Var(sqrtPrice ratio).
+        // 3. sqrtPrice deviation to price deviation: multiply by 4.
+        //    d(p)/p ~= 2 * d(sqrtP)/sqrtP, so price deviation ~= 4 * sqrtPrice deviation.
         variance *= 4;
 
-        // 5. WAD squared to WAD, apply SCALE_FACTOR.
+        // 4. Apply SCALE_FACTOR (variance is already WAD-scaled).
         volatilityFactor = FixedPointMathLib.fullMulDiv(variance, SCALE_FACTOR, WAD);
 
         // 6. Cap at 2 * WAD.

@@ -73,4 +73,8 @@ contract HoldfastHookHarness is HoldfastHook {
     function setStreakScore(bytes32 positionKey, uint256 score) external {
         streaks[positionKey].accumulatedScore = score;
     }
+
+    function exposed_volatilityMultiplier(uint256 volatilityFactor) external pure returns (uint256) {
+        return _volatilityMultiplier(volatilityFactor);
+    }
 }

@@ -204,4 +204,31 @@ contract HoldfastHookHelpersTest is Test {
         );
         assertEq(next, harness.TIER_SILVER_());
     }
+    function test_mult_zeroIsOneX() public view {
+        assertEq(harness.exposed_volatilityMultiplier(0), 1e18);
+    }
+
+    function test_mult_atLowerBoundIsOneX() public view {
+        assertEq(harness.exposed_volatilityMultiplier(5e17), 1e18);
+    }
+
+    function test_mult_midBandInterpolates() public view {
+        assertEq(harness.exposed_volatilityMultiplier(1e18), 1.25e18);
+    }
+
+    function test_mult_atUpperBoundIsMax() public view {
+        assertEq(harness.exposed_volatilityMultiplier(15e17), 1.5e18);
+    }
+
+    function test_mult_aboveUpperIsCapped() public view {
+        assertEq(harness.exposed_volatilityMultiplier(2e18), 1.5e18);
+    }
+
+    function test_mult_monotonicAcrossBand() public view {
+        uint256 m1 = harness.exposed_volatilityMultiplier(6e17);
+        uint256 m2 = harness.exposed_volatilityMultiplier(1e18);
+        uint256 m3 = harness.exposed_volatilityMultiplier(14e17);
+        assertLt(m1, m2, "multiplier increases across the band");
+        assertLt(m2, m3, "multiplier increases across the band");
+    }
 }

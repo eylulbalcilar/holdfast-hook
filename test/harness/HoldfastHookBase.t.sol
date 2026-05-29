@@ -4,6 +4,8 @@ pragma solidity ^0.8.26;
 import {Test} from "forge-std/Test.sol";
 import {HoldfastHookHarness} from "./HoldfastHookHarness.sol";
 import {HoldfastNFT} from "../../src/HoldfastNFT.sol";
+import {YieldRouter} from "../../src/YieldRouter.sol";
+import {MockYieldRouter} from "../mocks/MockYieldRouter.sol";
 
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {HookMiner} from "v4-periphery/utils/HookMiner.sol";
@@ -81,14 +83,15 @@ abstract contract HoldfastHookBase is Test {
                 | Hooks.AFTER_SWAP_FLAG
         );
 
-        bytes memory constructorArgs = abi.encode(IPoolManager(address(manager)), nft);
+        MockYieldRouter mockRouter = new MockYieldRouter();
+        bytes memory constructorArgs = abi.encode(IPoolManager(address(manager)), nft, YieldRouter(address(mockRouter)));
         (address hookAddr, bytes32 salt) = HookMiner.find(
             address(this),
             flags,
             type(HoldfastHookHarness).creationCode,
             constructorArgs
         );
-        harness = new HoldfastHookHarness{salt: salt}(IPoolManager(address(manager)), nft);
+        harness = new HoldfastHookHarness{salt: salt}(IPoolManager(address(manager)), nft, YieldRouter(address(mockRouter)));
         require(address(harness) == hookAddr, "harness mined address mismatch");
 
         // 5. Bind NFT to the hook so transfer-time settlement callback resolves

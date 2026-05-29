@@ -4,6 +4,8 @@ pragma solidity ^0.8.26;
 import {Test} from "forge-std/Test.sol";
 import {HoldfastHookHarness} from "../harness/HoldfastHookHarness.sol";
 import {HoldfastNFT} from "../../src/HoldfastNFT.sol";
+import {YieldRouter} from "../../src/YieldRouter.sol";
+import {MockYieldRouter} from "../mocks/MockYieldRouter.sol";
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {HookMiner} from "v4-periphery/utils/HookMiner.sol";
@@ -35,14 +37,15 @@ contract HoldfastHookHelpersTest is Test {
                 | Hooks.AFTER_SWAP_FLAG
         );
 
-        bytes memory constructorArgs = abi.encode(IPoolManager(address(0xDEAD)), nft);
+        MockYieldRouter mockRouter = new MockYieldRouter();
+        bytes memory constructorArgs = abi.encode(IPoolManager(address(0xDEAD)), nft, YieldRouter(address(mockRouter)));
         (address hookAddr, bytes32 salt) = HookMiner.find(
             address(this),
             flags,
             type(HoldfastHookHarness).creationCode,
             constructorArgs
         );
-        harness = new HoldfastHookHarness{salt: salt}(IPoolManager(address(0xDEAD)), nft);
+        harness = new HoldfastHookHarness{salt: salt}(IPoolManager(address(0xDEAD)), nft, YieldRouter(address(mockRouter)));
         require(address(harness) == hookAddr, "harness mined address mismatch");
     }
 

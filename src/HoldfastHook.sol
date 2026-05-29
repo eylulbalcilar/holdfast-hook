@@ -17,6 +17,7 @@ import {ScoreAccumulator} from "./libraries/ScoreAccumulator.sol";
 
 import {IHoldfastHook} from "./interfaces/IHoldfastHook.sol";
 import {HoldfastNFT} from "./HoldfastNFT.sol";
+import {YieldRouter} from "./YieldRouter.sol";
 
 /// @title HoldfastHook
 /// @notice Uniswap v4 hook measuring IL exposure, partially compensating realized IL,
@@ -78,6 +79,13 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
 
     HoldfastNFT public immutable nft;
 
+    /// @notice The bound YieldRouter. Holds Aave V3 supply/withdraw plumbing.
+    /// @dev Wired through the constructor; the afterSwap real-USDC
+    ///      capture path is implemented in a later milestone (see DESIGN.md
+    ///      "YieldRouter wiring scope"). The hook keeps an IOU `bonusPoolUSDC`
+    ///      counter in the meantime.
+    YieldRouter public immutable yieldRouter;
+
     event PositionOpened(
         bytes32 indexed positionKey,
         address indexed owner,
@@ -94,8 +102,9 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
     event PositionClosed(bytes32 indexed positionKey, address indexed owner, uint256 accumulatedScore, int256 realizedIL, uint128 frozenAt);
     event PoolInitialized(PoolId indexed poolId, uint160 sqrtPriceX96, int24 tick);
 
-    constructor(IPoolManager _poolManager, HoldfastNFT _nft) BaseHook(_poolManager) {
+    constructor(IPoolManager _poolManager, HoldfastNFT _nft, YieldRouter _yieldRouter) BaseHook(_poolManager) {
         nft = _nft;
+        yieldRouter = _yieldRouter;
     }
 
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {

@@ -3,6 +3,7 @@ pragma solidity ^0.8.26;
 
 import {HoldfastHook} from "../../src/HoldfastHook.sol";
 import {HoldfastNFT} from "../../src/HoldfastNFT.sol";
+import {YieldRouter} from "../../src/YieldRouter.sol";
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {PoolId} from "v4-core/types/PoolId.sol";
@@ -12,7 +13,7 @@ import {PoolId} from "v4-core/types/PoolId.sol";
 ///         and tier constants. Production surface stays minimal; harness lives
 ///         only under test/.
 contract HoldfastHookHarness is HoldfastHook {
-    constructor(IPoolManager _poolManager, HoldfastNFT _nft) HoldfastHook(_poolManager, _nft) {}
+    constructor(IPoolManager _poolManager, HoldfastNFT _nft, YieldRouter _yieldRouter) HoldfastHook(_poolManager, _nft, _yieldRouter) {}
 
     function exposed_positionKey(address owner, int24 tickLower, int24 tickUpper, bytes32 salt)
         external

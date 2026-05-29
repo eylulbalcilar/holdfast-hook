@@ -208,6 +208,7 @@ The bonus pool is held as real USDC and supplied to Aave V3 between funding and 
 
 **Access control: only the bound hook.**
 
+
 `YieldRouter.supplyToAave` and `YieldRouter.withdrawFromAave` are gated by an `onlyHook` modifier. The hook address is set exactly once via `setHook` (owner-only, one-time bind), mirroring the `HoldfastNFT` trust boundary. The owner has no withdraw or emergency path in this version: the router holds no idle USDC outside the bonus pool flow, so the blast radius of a router-only compromise is bounded by the bonus pool balance.
 
 Rejected alternative: owner-emergency withdraw path. Rejected for hookathon scope because (1) it expands the attack surface without a corresponding threat model (the owner key is not multisig-guarded in this submission), (2) the bonus pool is reconstructible from on-chain state if the router is redeployed, and (3) the minimal-trust framing is easier to defend than a partial-emergency framing. A future mainnet variant under a multisig owner can revisit this.
@@ -230,7 +231,11 @@ The fork block is pinned per test invocation via `--fork-block-number`, not in `
 
 **Withdraw failure fallback.**
 
-`YieldRouter.withdrawFromAave` wraps the Aave `withdraw` call in a try/catch. On failure, the router does not revert the claim transaction; it returns a partial-fill amount equal to the router's idle USDC balance (if any) and emits a `WithdrawFailed` event with the failure reason. The claim flow consumes the returned amount and reconciles. This matches the "Aave withdraw failure: try/catch with fallback path" entry in the Attack Vectors table.
+`YieldRouter.withdrawFromAave` wraps the Aave `withdraw` call in a try/catch. On failure, the router does not revert the claim transaction; it returns 0 and emits a `WithdrawFailed` event carrying the Aave revert reason. The claim flow consumes the zero-fill and reconciles via the IOU accounting. This matches the "Aave withdraw failure: try/catch with fallback path" entry in the Attack Vectors table.
+
+**Hook wiring scope.**
+
+`HoldfastHook` holds an immutable reference to `YieldRouter`, set at construction. The hook does not yet route real USDC through the router: `afterSwap` continues to maintain an in-memory `bonusPoolUSDC` IOU counter, and `AFTER_SWAP_RETURNS_DELTA` remains disabled. The real-USDC capture path, the `afterSwapReturnDelta` flip, and the corresponding `take`/`settle` accounting are scoped to the claim-flow milestone that follows. Sequencing rationale: the delta-accounting change to `afterSwap` is the highest-risk modification to the swap path and is best validated alongside the claim flow that consumes the captured USDC, rather than as an isolated change with no downstream consumer.
 
 ### NFT Mechanics
 

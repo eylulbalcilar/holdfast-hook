@@ -202,12 +202,37 @@ Distributed proportionally to absolute realized IL across all positions that inc
 userILShare = (ilArmAllocation) × (|userIL| / sumOfAllIL)
 ```
 
+### Bonus Pool Accounting Unit
+
+Internal bonus pool accounting (`sumOfTierScores`, `sumOfAbsoluteIL`, per-position shares) is maintained in WAD scale (1e18). USDC is a 6-decimal token; the conversion to USDC-native units happens exactly once, at the boundary where the contract calls `IERC20(USDC).transfer(recipient, amount)` in the claim flow:
+
+```
+usdcAmount = wadAmount × 1e6 / 1e18
+```
+
+Integer division truncates toward zero (Solidity default), which rounds down in favor of the protocol rather than the claimant. Dust accumulates in the router and is recycled into the next bonus pool epoch.
+
+Rejected alternative: store bonus pool in USDC-native (6 decimals), compute tier shares in WAD then scale down. Rejected because mixed-unit state increases the risk of decimal-mismatch bugs across the score formula (WAD), tier accounting (USDC-native), and IL math (WAD). A single WAD-internal convention with one boundary conversion is easier to audit.
+
+### Claim Flow
+
+Claims are initiated by the NFT owner:
+
+```solidity
+function claim(uint256 tokenId) external
+```
+
+Authorization is via `HoldfastNFT.ownerOf(tokenId) == msg.sender`. The NFT contract is the single source of truth for claim authorization; the hook does not maintain a parallel owner index. The position key is resolved via `HoldfastNFT.tokenIdToPositionKey(tokenId)`.
+
+Claim payout = tier-weighted share + realized-IL share. Both are computed in WAD, summed, and converted to USDC at the transfer boundary. The router withdraws the total from Aave V3 via `withdrawFromAave`; on Aave withdraw failure, the partial-fill fallback applies (see Withdraw Failure Fallback) and the unfulfilled portion is recorded for retry.
+
+Rejected alternative: `claim(bytes32 positionKey)` with hook-side owner verification. Rejected because it would require the hook to maintain a positionKey-to-owner mapping in parallel with the NFT, doubling the authorization surface for no functional gain. Routing all claim authorization through `NFT.ownerOf` keeps the trust boundary clean (see Trust Boundary design decision).
+
 ### YieldRouter (Aave V3 Integration)
 
 The bonus pool is held as real USDC and supplied to Aave V3 between funding and claim. `YieldRouter` is a thin adapter contract that owns the USDC balance, supplies it to Aave V3's USDC reserve, and withdraws on claim. aToken accounting is delegated to Aave (scaled balance pattern), so the router does not maintain a separate yield ledger.
 
 **Access control: only the bound hook.**
-
 
 `YieldRouter.supplyToAave` and `YieldRouter.withdrawFromAave` are gated by an `onlyHook` modifier. The hook address is set exactly once via `setHook` (owner-only, one-time bind), mirroring the `HoldfastNFT` trust boundary. The owner has no withdraw or emergency path in this version: the router holds no idle USDC outside the bonus pool flow, so the blast radius of a router-only compromise is bounded by the bonus pool balance.
 
@@ -231,11 +256,7 @@ The fork block is pinned per test invocation via `--fork-block-number`, not in `
 
 **Withdraw failure fallback.**
 
-`YieldRouter.withdrawFromAave` wraps the Aave `withdraw` call in a try/catch. On failure, the router does not revert the claim transaction; it returns 0 and emits a `WithdrawFailed` event carrying the Aave revert reason. The claim flow consumes the zero-fill and reconciles via the IOU accounting. This matches the "Aave withdraw failure: try/catch with fallback path" entry in the Attack Vectors table.
-
-**Hook wiring scope.**
-
-`HoldfastHook` holds an immutable reference to `YieldRouter`, set at construction. The hook does not yet route real USDC through the router: `afterSwap` continues to maintain an in-memory `bonusPoolUSDC` IOU counter, and `AFTER_SWAP_RETURNS_DELTA` remains disabled. The real-USDC capture path, the `afterSwapReturnDelta` flip, and the corresponding `take`/`settle` accounting are scoped to the claim-flow milestone that follows. Sequencing rationale: the delta-accounting change to `afterSwap` is the highest-risk modification to the swap path and is best validated alongside the claim flow that consumes the captured USDC, rather than as an isolated change with no downstream consumer.
+`YieldRouter.withdrawFromAave` wraps the Aave `withdraw` call in a try/catch. On failure, the router does not revert the claim transaction; it returns a partial-fill amount equal to the router's idle USDC balance (if any) and emits a `WithdrawFailed` event with the failure reason. The claim flow consumes the returned amount and reconciles. This matches the "Aave withdraw failure: try/catch with fallback path" entry in the Attack Vectors table.
 
 ### NFT Mechanics
 
@@ -244,6 +265,10 @@ When a position first crosses the Bronze threshold, an NFT is minted. Subsequent
 NFT serves as a claim accounting primitive: tier indicator, per-position isolated state, and transfer-time settlement hook. ERC-721 transferability is preserved as a standard property but is not the primary design intent.
 
 **Mint timing.** `HoldfastHook` calls `HoldfastNFT.mint(to, positionKey)` only when both `accumulatedScore >= BRONZE_THRESHOLD` AND `block.number - firstActiveBlock >= BRONZE_BLOCKS` are satisfied. Subsequent `upgradeTier(tokenId, newTier)` calls follow the same dual-criterion check at the Silver and Gold thresholds. The NFT contract itself does not enforce the dual criterion; see the Trust Boundary design decision.
+
+**Transfer settlement (`settleOnTransfer`).** On every non-mint transfer, `HoldfastNFT._update` invokes `IHoldfastHook.settleOnTransfer(positionKey, from, to)` synchronously before the transfer completes. The hook computes the accrued bonus owed to `from`, attempts payout via `YieldRouter.withdrawFromAave`, and resets position bonus state so that the new owner accrues from a clean baseline.
+
+Failure semantics: if the Aave withdraw partial-fills or returns zero, the unpaid remainder is written to `pendingClaim[from]`, a per-address mapping that the original owner can drain via the normal `claim` flow at a later block. The transfer always completes regardless of payout outcome; freezing transfers on payout failure would convert a yield-protocol failure into a transferability failure and is rejected. This matches the partial-fill semantics in Withdraw Failure Fallback.
 
 ### Position Lifecycle
 
@@ -276,6 +301,16 @@ struct PoolVolatility {
 }
 
 mapping(PoolId => PoolVolatility) public volatility;
+
+// Tier accounting (WAD-scaled)
+mapping(uint8 => uint256) public sumOfTierScores;   // tier => sum of accumulatedScore across active positions in that tier
+uint256 public sumOfAbsoluteIL;                     // sum of |realizedIL| across positions with non-zero closed IL
+
+// Pending claims from failed settleOnTransfer payouts (WAD-scaled)
+mapping(address => uint256) public pendingClaim;
+
+// USDC side resolution (set in afterInitialize)
+mapping(PoolId => bool) public usdcIsToken0;
 ```
 
 `HoldfastNFT` maintains the per-token and inverse mappings used during mint, tier upgrade, and transfer settlement:
@@ -296,6 +331,8 @@ positionKey = Position.calculatePositionKey(owner, tickLower, tickUpper, salt)
 ```
 
 `salt` is passed through from Uniswap v4's `ModifyLiquidityParams.salt`, enabling the same owner to maintain multiple positions with the same tick range. The key layout is byte-identical to v4-core's `Position.calculatePositionKey`, so the same value indexes both the hook's streak mapping and Uniswap's internal position state (consumed via `StateLibrary.getPositionLiquidity` in `afterRemoveLiquidity`).
+
+The position owner is resolved from `hookData` passed through `ModifyLiquidityParams.hookData` (`abi.decode(hookData, (address))`), not from `msg.sender`, because `msg.sender` in v4 lifecycle callbacks is the PoolManager (or a router contract), not the LP. The hook reverts on empty `hookData` to prevent ambiguous owner resolution.
 
 ## Gas Optimization: Lazy Update Pattern
 
@@ -392,6 +429,10 @@ A 48-configuration whale parameter sweep (liquidity share 50 to 99%, volatility 
 
 Bonus pool funding draws 15% of pool fees. Lower rates (5 to 10%) weaken the bonus pool's effective size; higher rates (20 to 30%) penalize early-stage LPs before they qualify for any tier. 15% positions loyal LPs at marginal positive net return, mercenary LPs at marginal negative, and new LPs at reasonable time-to-breakeven. The rate is configurable per pool and subject to per-pool calibration based on the observed volatility regime; see Net LP Returns for the calibration sweep.
 
+### Tier-of-One Distribution
+
+If a single LP is the only active position in a given tier (e.g. the only Gold), that LP receives 100% of the tier's allocation (40% of the bonus pool for Gold). This is intended behavior consistent with the "rare by design" framing: tier scarcity is the reward signal. The dual criterion makes solo-Gold a non-trivial outcome to achieve (2.3+ days of active in-range tenure plus 1,000 WAD accumulated score), so the case is not exploitable by a fresh whale. Mercenary LPs and partial-tier LPs (Bronze, Silver) provide the funding asymmetry that makes solo-Gold rewards meaningful.
+
 ## Net LP Returns
 
 The following table summarizes net LP returns across three calibration scenarios. All scenarios share: $1M monthly swap volume, 0.30% pool fee, 3% Aave V3 USDC supply APY (testnet estimate), LP holds 10% of pool liquidity, 70% tier-weighted arm fraction (the realized-IL arm at 30% is excluded since it is path-dependent and is sanity-checked separately). Source: `scripts/sim/net_lp_returns.py`; full reports in `scripts/sim/results/net_lp_returns/`.
@@ -429,11 +470,13 @@ Holdfast is designed for a specific pool segment. It is not suitable for:
 - **Low-volume pools** (< ~100 swaps/day): the 10-observation volatility buffer retains stale data, degrading the volatility signal
 - **Low-volatility pools** (< 20% annualized): the volatility multiplier remains near 1.0x, and fee redistribution provides minimal LP benefit (the baseline calibration scenario in Net LP Returns confirms this); stablecoin pools (USDC/USDT etc.) fall into this category
 - **Range-bound pairs:** sideways markets produce low scores, making tier qualification difficult or impossible
+- **Non-USDC pools:** the bonus pool is held as USDC and supplied to Aave V3's USDC reserve. The pool must contain USDC as one of its two tokens (`currency0` or `currency1`); the hook reads the USDC side of the `BalanceDelta` in `afterSwap` to capture the redistribution. Multi-token-to-USDC swap paths inside the hook are out of scope.
 
 Recommended deployment criteria:
 
 - Volatile pairs (>20% annualized historical volatility)
 - Active swap volume (~100+ swaps/day minimum)
+- One side of the pair must be USDC
 - Pool deployers should evaluate these criteria before installing the hook
 
 ## Related Work
@@ -456,15 +499,16 @@ Holdfast's contribution is the synthesis: IL-aware scoring + realized-IL compens
 |---|---|
 | 1-tick range farming | Logarithmic `rangeNarrowness` + minimum liquidity threshold |
 | Flash loan transient liquidity | `afterAddLiquidity` enforces a 1-block delay before score accrual |
-| NFT transfer accrual theft | `_update` (OZ v5) callback settles to the original owner |
+| NFT transfer accrual theft | `_update` (OZ v5) callback settles to the original owner; unpaid remainder written to `pendingClaim` on Aave partial-fill |
 | Volatility manipulation (sandwich) | 10-observation ring buffer dampens single-swap impact |
 | Whale split sybil | Linear `liquidityShare` in score formula (formula-level protection) |
 | Whale-instant-Gold | Minimum active block requirement at each tier; 48-config sweep confirms all whale profiles blocks-gated (79.6x slowdown for worst case); enforced in `HoldfastHook` before calling `mint` / `upgradeTier` (see Trust Boundary) |
 | Open/close farming | Streaks freeze rather than reset; no farming benefit |
 | Reentrancy on claim | ReentrancyGuard + checks-effects-interactions |
-| Aave withdraw failure | Try/catch with fallback path in the claim flow |
+| Aave withdraw failure | Try/catch with partial-fill fallback in `YieldRouter.withdrawFromAave`; claim flow consumes returned amount, `pendingClaim` records any shortfall |
 | Aave Pool approval scope abuse | Infinite approval but router holds no USDC outside bonus pool flow; blast radius bounded to bonus pool balance |
 | IL baseline manipulation | `entrySqrtPriceX96` is set once in `afterAddLiquidity` and is immutable for the position |
+| `msg.sender`-based owner spoofing | Owner resolved from `hookData` (`abi.decode(hookData, (address))`) in lifecycle callbacks, not `msg.sender` (which is PoolManager / router) |
 
 ## Scope
 
@@ -488,6 +532,7 @@ Holdfast's contribution is the synthesis: IL-aware scoring + realized-IL compens
 - Multi-protocol yield routing (Morpho, Yearn, etc.)
 - Chainlink TWAP volatility adapter
 - ERC-6909 variant for batch operations
+- Multi-token-to-USDC swap path inside the hook (pools must contain USDC)
 
 ## Repository Structure
 

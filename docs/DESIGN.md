@@ -202,6 +202,36 @@ Distributed proportionally to absolute realized IL across all positions that inc
 userILShare = (ilArmAllocation) × (|userIL| / sumOfAllIL)
 ```
 
+### YieldRouter (Aave V3 Integration)
+
+The bonus pool is held as real USDC and supplied to Aave V3 between funding and claim. `YieldRouter` is a thin adapter contract that owns the USDC balance, supplies it to Aave V3's USDC reserve, and withdraws on claim. aToken accounting is delegated to Aave (scaled balance pattern), so the router does not maintain a separate yield ledger.
+
+**Access control: only the bound hook.**
+
+`YieldRouter.supplyToAave` and `YieldRouter.withdrawFromAave` are gated by an `onlyHook` modifier. The hook address is set exactly once via `setHook` (owner-only, one-time bind), mirroring the `HoldfastNFT` trust boundary. The owner has no withdraw or emergency path in this version: the router holds no idle USDC outside the bonus pool flow, so the blast radius of a router-only compromise is bounded by the bonus pool balance.
+
+Rejected alternative: owner-emergency withdraw path. Rejected for hookathon scope because (1) it expands the attack surface without a corresponding threat model (the owner key is not multisig-guarded in this submission), (2) the bonus pool is reconstructible from on-chain state if the router is redeployed, and (3) the minimal-trust framing is easier to defend than a partial-emergency framing. A future mainnet variant under a multisig owner can revisit this.
+
+**Approve flow: infinite approval on deploy.**
+
+`YieldRouter` issues `type(uint256).max` USDC approval to the Aave V3 Pool once in the constructor. Subsequent `supplyToAave` calls do not re-approve. Lower per-supply gas cost, and Aave V3 Pool is a widely-audited single counterparty whose blast radius is bounded to the router's USDC balance (which equals the bonus pool balance plus in-flight swap captures).
+
+Rejected alternative: per-supply approval (approve exact amount before each supply). Rejected on gas grounds (one extra storage write per swap that funds the bonus pool, ~5k gas) and because the risk reduction is illusory (the router holds no USDC outside the bonus pool flow, so per-supply approval does not actually shrink the realistic loss surface).
+
+**Fee capture mechanism: `afterSwapReturnDelta`.**
+
+This ratifies the Swap Hook Mechanics decision: the `AFTER_SWAP_RETURNS_DELTA` permission flag is enabled, and `afterSwap` returns a delta equal to `redistributionRate × volatilityMultiplier × poolFee`. The hook contract receives the captured USDC in the same transaction, then calls `YieldRouter.supplyToAave(capturedAmount)`. The IOU accounting introduced in earlier work is retired: `bonusPoolUSDC` becomes a real balance, not a uint256 ledger.
+
+**Fork test target: Base mainnet Aave V3 at a pinned block.**
+
+Integration tests for the Aave V3 supply and withdraw paths fork Base mainnet rather than Base Sepolia, despite the deployment target being Base Sepolia. Rationale: Base Sepolia's Aave deployment has sporadic reserve state and thin testnet liquidity, which produces flaky fork tests and non-meaningful yield accrual measurements. Base mainnet's USDC reserve is high-TVL and stable, so the fork test produces a deterministic yield signal under a real interest rate model.
+
+The fork block is pinned per test invocation via `--fork-block-number`, not in `foundry.toml`, so the pin can be advanced without a config change. The test reports the block number in its setup log to keep CI runs auditable. Deployment to Base Sepolia is unaffected by this choice; only the integration test environment differs.
+
+**Withdraw failure fallback.**
+
+`YieldRouter.withdrawFromAave` wraps the Aave `withdraw` call in a try/catch. On failure, the router does not revert the claim transaction; it returns a partial-fill amount equal to the router's idle USDC balance (if any) and emits a `WithdrawFailed` event with the failure reason. The claim flow consumes the returned amount and reconciles. This matches the "Aave withdraw failure: try/catch with fallback path" entry in the Attack Vectors table.
+
 ### NFT Mechanics
 
 When a position first crosses the Bronze threshold, an NFT is minted. Subsequent tier upgrades update the same tokenId's metadata pointer; new tokens are not minted on upgrade. The `_update` override (OpenZeppelin v5 pattern) settles accrued rewards to the original owner during transfer.
@@ -428,6 +458,7 @@ Holdfast's contribution is the synthesis: IL-aware scoring + realized-IL compens
 | Open/close farming | Streaks freeze rather than reset; no farming benefit |
 | Reentrancy on claim | ReentrancyGuard + checks-effects-interactions |
 | Aave withdraw failure | Try/catch with fallback path in the claim flow |
+| Aave Pool approval scope abuse | Infinite approval but router holds no USDC outside bonus pool flow; blast radius bounded to bonus pool balance |
 | IL baseline manipulation | `entrySqrtPriceX96` is set once in `afterAddLiquidity` and is immutable for the position |
 
 ## Scope

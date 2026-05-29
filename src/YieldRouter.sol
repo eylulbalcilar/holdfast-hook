@@ -117,28 +117,40 @@ contract YieldRouter is Ownable {
     }
 
     // -------------------------------------------------------------------------
-    // Supply / withdraw (step 5 implementation)
+    // Supply / withdraw
     // -------------------------------------------------------------------------
 
     /// @notice Supplies `amount` of USDC from the router's balance to Aave V3.
-    /// @dev Implementation lands in step 5. Skeleton declares the signature and
-    ///      access control surface only.
+    /// @dev The hook is expected to transfer `amount` USDC to the router before
+    ///      calling this function. The router does not pull from the hook; it
+    ///      supplies whatever USDC it holds, up to `amount`. If the router's
+    ///      balance is insufficient, Aave's underlying transferFrom reverts and
+    ///      the whole transaction is reverted (no silent partial supply).
     /// @param amount The amount of USDC to supply.
     function supplyToAave(uint256 amount) external onlyHook {
         if (amount == 0) revert ZeroAmount();
-        // step 5: aavePool.supply(address(usdc), amount, address(this), 0);
-        revert("not implemented");
+
+        aavePool.supply(address(usdc), amount, address(this), 0);
+
+        emit Supplied(amount);
     }
 
-    /// @notice Withdraws `amount` of USDC from Aave V3 to the bound hook.
-    /// @dev Implementation lands in step 5. On Aave failure, the fallback path
-    ///      returns 0 and emits `WithdrawFailed`. See DESIGN.md "Withdraw
-    ///      failure fallback".
-    /// @param amount The amount of USDC to withdraw.
-    /// @return actual The amount actually transferred to the hook.
+    /// @notice Withdraws `amount` of USDC from Aave V3 directly to the bound
+    ///         hook. On Aave failure, returns 0 and emits `WithdrawFailed`; the
+    ///         caller is expected to reconcile a zero-fill.
+    /// @dev Aave V3's `withdraw` accepts `type(uint256).max` as a sentinel for
+    ///      the full aToken balance; callers may pass that value through.
+    /// @param amount The amount of USDC to withdraw, or `type(uint256).max`.
+    /// @return actual The amount actually transferred to the hook; 0 on failure.
     function withdrawFromAave(uint256 amount) external onlyHook returns (uint256 actual) {
         if (amount == 0) revert ZeroAmount();
-        // step 5: try aavePool.withdraw(...) catch { emit WithdrawFailed; return 0; }
-        revert("not implemented");
+
+        try aavePool.withdraw(address(usdc), amount, hook) returns (uint256 returned) {
+            actual = returned;
+            emit Withdrawn(amount, returned);
+        } catch (bytes memory reason) {
+            actual = 0;
+            emit WithdrawFailed(amount, reason);
+        }
     }
 }

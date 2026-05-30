@@ -91,4 +91,17 @@ contract HoldfastHookHarness is HoldfastHook {
     function exposed_volatilityMultiplier(uint256 volatilityFactor) external pure returns (uint256) {
         return _volatilityMultiplier(volatilityFactor);
     }
+
+    function exposed_computeTierShareUsdc(bytes32 positionKey, uint256 totalBonusUsdc)
+        external
+        view
+        returns (uint256)
+    {
+        return _computeTierShareUsdc(streaks[positionKey], totalBonusUsdc);
+    }
+
+    function TIER_ARM_BPS_() external pure returns (uint256) { return TIER_ARM_BPS; }
+    function BPS_DENOM_() external pure returns (uint256) { return BPS_DENOM; }
+    function GOLD_ALLOC_BPS_() external pure returns (uint256) { return GOLD_ALLOC_BPS; }
+
 }

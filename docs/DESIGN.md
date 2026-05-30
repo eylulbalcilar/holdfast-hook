@@ -246,7 +246,9 @@ Rejected alternative: per-supply approval (approve exact amount before each supp
 
 **Fee capture mechanism: `afterSwapReturnDelta`.**
 
-This ratifies the Swap Hook Mechanics decision: the `AFTER_SWAP_RETURNS_DELTA` permission flag is enabled, and `afterSwap` returns a delta equal to `redistributionRate × volatilityMultiplier × poolFee`. The hook contract receives the captured USDC in the same transaction, then calls `YieldRouter.supplyToAave(capturedAmount)`. The IOU accounting introduced in earlier work is retired: `bonusPoolUSDC` becomes a real balance, not a uint256 ledger.
+This ratifies the Swap Hook Mechanics decision: the `AFTER_SWAP_RETURNS_DELTA` permission flag is enabled, and `afterSwap` returns a delta equal to `redistributionRate × volatilityMultiplier × poolFee`. The hook contract receives the captured USDC in the same transaction via `poolManager.take(USDC, yieldRouter, captureAmt)`, then calls `YieldRouter.supplyToAave(capturedAmount)`. The IOU accounting introduced in earlier work is retired: `bonusPoolUSDC` becomes a real balance, not a uint256 ledger.
+
+**Asymmetric capture coverage.** PoolManager applies the `afterSwap` hookDelta to the swap's *unspecified* currency. Capture is therefore active only on swaps where USDC is the unspecified currency: exact-in trades that swap *into* USDC (output side), and exact-out trades that swap *out of* USDC (input side). Swaps where USDC is specified are skipped (zero hookDelta returned). In an active pool where arbitrage flow is roughly symmetric across both directions, this halves the capture rate per swap relative to a hypothetical full-coverage variant; the redistribution rate is calibrated against the captured share, not the full fee, so the LP-incentive math in Net LP Returns is unchanged. A symmetric-capture variant would require manually settling the non-hookDelta currency through a sync/settle cycle, which adds gas and a second cross-currency accounting surface; the asymmetric path was selected for the hookathon scope.
 
 **Fork test target: Base mainnet Aave V3 at a pinned block.**
 

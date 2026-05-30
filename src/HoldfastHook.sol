@@ -73,6 +73,13 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
     mapping(PoolId => uint256) public globalScorePerLiquidity; // Curve gauge-style pool-level accumulator, incremented per swap
     mapping(PoolId => uint256) public lastGlobalScoreUpdateBlock;
     mapping(PoolId => uint256) public redistributionRate;
+
+    /// @notice Sum of accumulatedScore across all active positions currently in a given tier.
+    /// @dev    WAD scale; consumed by the claim flow for pro-rata tier shares.
+    mapping(uint8 => uint256) public sumOfTierScores;
+
+    /// @notice Sum of |realizedIL| across closed positions not yet claimed.
+    uint256 public sumOfAbsoluteIL;
     mapping(PoolId => bool) public usdcIsToken0;
 
     using PoolIdLibrary for PoolKey;
@@ -308,6 +315,15 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
         if (remaining == 0) {
             // Full closure: freeze the streak. Tier persists (no downgrade) and
             // accumulatedScore is preserved so a future re-entry resumes the streak.
+            // Tier accounting: closed positions exit the tier sum (claim flow only
+            // distributes among active positions). Realized-IL accounting: |IL| enters
+            // the realized-IL arm sum for proportional distribution.
+            if (s.currentTier != TIER_NONE) {
+                sumOfTierScores[s.currentTier] -= s.accumulatedScore;
+            }
+            if (s.realizedIL < 0) {
+                sumOfAbsoluteIL += uint256(-s.realizedIL);
+            }
             s.isActive = false;
             s.frozenAt = uint128(block.number);
             emit PositionClosed(positionKey, owner, s.accumulatedScore, s.realizedIL, uint128(block.number));
@@ -461,27 +477,27 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
     function _evaluateAndMaybeMint(bytes32 positionKey, address owner) internal {
         PositionStreak storage s = streaks[positionKey];
         if (s.firstActiveBlock == 0) return; // unknown position
-
         uint256 blocksActive = block.number - s.firstActiveBlock;
         uint8 nextTier = _evaluateNextTier(s.currentTier, s.accumulatedScore, blocksActive);
         if (nextTier == s.currentTier) return; // no transition
-
+        // Tier accounting: a position enters its first tier with its full accumulatedScore.
+        // On upgrade the score moves from the old bucket to the new one.
         if (s.currentTier == TIER_NONE) {
-            // First crossing: mint a Bronze NFT and record the tokenId.
-            // Note: nextTier may be Bronze, Silver, or Gold here (direct-jump cases).
-            // The NFT contract mints at Bronze; we then upgrade to nextTier if higher.
             uint256 tokenId = nft.mint(owner, positionKey);
             s.nftTokenId = tokenId;
             s.currentTier = TIER_BRONZE;
+            sumOfTierScores[TIER_BRONZE] += s.accumulatedScore;
             emit TierMinted(positionKey, owner, tokenId);
-
             if (nextTier > TIER_BRONZE) {
                 nft.upgradeTier(tokenId, nextTier);
+                sumOfTierScores[TIER_BRONZE] -= s.accumulatedScore;
+                sumOfTierScores[nextTier] += s.accumulatedScore;
                 s.currentTier = nextTier;
                 emit TierUpgraded(positionKey, tokenId, nextTier);
             }
         } else {
-            // Already minted: upgrade to nextTier.
+            sumOfTierScores[s.currentTier] -= s.accumulatedScore;
+            sumOfTierScores[nextTier] += s.accumulatedScore;
             nft.upgradeTier(s.nftTokenId, nextTier);
             s.currentTier = nextTier;
             emit TierUpgraded(positionKey, s.nftTokenId, nextTier);

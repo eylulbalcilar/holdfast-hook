@@ -81,17 +81,18 @@ abstract contract HoldfastHookBase is Test {
                 | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG
                 | Hooks.BEFORE_SWAP_FLAG
                 | Hooks.AFTER_SWAP_FLAG
+                | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
         );
 
         MockYieldRouter mockRouter = new MockYieldRouter();
-        bytes memory constructorArgs = abi.encode(IPoolManager(address(manager)), nft, YieldRouter(address(mockRouter)));
+        bytes memory constructorArgs = abi.encode(IPoolManager(address(manager)), nft, YieldRouter(address(mockRouter)), address(token0));
         (address hookAddr, bytes32 salt) = HookMiner.find(
             address(this),
             flags,
             type(HoldfastHookHarness).creationCode,
             constructorArgs
         );
-        harness = new HoldfastHookHarness{salt: salt}(IPoolManager(address(manager)), nft, YieldRouter(address(mockRouter)));
+        harness = new HoldfastHookHarness{salt: salt}(IPoolManager(address(manager)), nft, YieldRouter(address(mockRouter)), address(token0));
         require(address(harness) == hookAddr, "harness mined address mismatch");
 
         // 5. Bind NFT to the hook so transfer-time settlement callback resolves

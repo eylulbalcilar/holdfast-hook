@@ -16,6 +16,8 @@ import {HookMiner} from "v4-periphery/utils/HookMiner.sol";
 ///         address validation passes. The PoolManager is a dummy address since no
 ///         lifecycle entry point is invoked.
 contract HoldfastHookHelpersTest is Test {
+    address internal constant MOCK_USDC = address(0xCAFE);
+
     HoldfastHookHarness internal harness;
     HoldfastNFT internal nft;
 
@@ -35,17 +37,18 @@ contract HoldfastHookHelpersTest is Test {
                 | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG
                 | Hooks.BEFORE_SWAP_FLAG
                 | Hooks.AFTER_SWAP_FLAG
+                | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
         );
 
         MockYieldRouter mockRouter = new MockYieldRouter();
-        bytes memory constructorArgs = abi.encode(IPoolManager(address(0xDEAD)), nft, YieldRouter(address(mockRouter)));
+        bytes memory constructorArgs = abi.encode(IPoolManager(address(0xDEAD)), nft, YieldRouter(address(mockRouter)), MOCK_USDC);
         (address hookAddr, bytes32 salt) = HookMiner.find(
             address(this),
             flags,
             type(HoldfastHookHarness).creationCode,
             constructorArgs
         );
-        harness = new HoldfastHookHarness{salt: salt}(IPoolManager(address(0xDEAD)), nft, YieldRouter(address(mockRouter)));
+        harness = new HoldfastHookHarness{salt: salt}(IPoolManager(address(0xDEAD)), nft, YieldRouter(address(mockRouter)), MOCK_USDC);
         require(address(harness) == hookAddr, "harness mined address mismatch");
     }
 

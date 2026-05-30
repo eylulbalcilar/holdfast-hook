@@ -13,7 +13,7 @@ import {PoolId} from "v4-core/types/PoolId.sol";
 ///         and tier constants. Production surface stays minimal; harness lives
 ///         only under test/.
 contract HoldfastHookHarness is HoldfastHook {
-    constructor(IPoolManager _poolManager, HoldfastNFT _nft, YieldRouter _yieldRouter) HoldfastHook(_poolManager, _nft, _yieldRouter) {}
+    constructor(IPoolManager _poolManager, HoldfastNFT _nft, YieldRouter _yieldRouter, address _usdc) HoldfastHook(_poolManager, _nft, _yieldRouter, _usdc) {}
 
     function exposed_positionKey(address owner, int24 tickLower, int24 tickUpper, bytes32 salt)
         external

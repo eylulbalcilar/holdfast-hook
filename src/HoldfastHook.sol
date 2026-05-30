@@ -7,6 +7,7 @@ import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
+import {Currency} from "v4-core/types/Currency.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapDelta.sol";
 import {ModifyLiquidityParams, SwapParams} from "v4-core/types/PoolOperation.sol";
 import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
@@ -72,7 +73,7 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
     mapping(PoolId => uint256) public globalScorePerLiquidity; // Curve gauge-style pool-level accumulator, incremented per swap
     mapping(PoolId => uint256) public lastGlobalScoreUpdateBlock;
     mapping(PoolId => uint256) public redistributionRate;
-    uint256 public bonusPoolUSDC;
+    mapping(PoolId => bool) public usdcIsToken0;
 
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
@@ -80,11 +81,18 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
     HoldfastNFT public immutable nft;
 
     /// @notice The bound YieldRouter. Holds Aave V3 supply/withdraw plumbing.
-    /// @dev Wired through the constructor; the afterSwap real-USDC
-    ///      capture path is implemented in a later milestone (see DESIGN.md
-    ///      "YieldRouter wiring scope"). The hook keeps an IOU `bonusPoolUSDC`
-    ///      counter in the meantime.
+    /// @dev Wired through the constructor. `_afterSwap` captures the redistribution
+    ///      via `poolManager.take()` and supplies it to Aave V3 in the same call.
     YieldRouter public immutable yieldRouter;
+
+    /// @notice The USDC token address. Bonus pool denomination; supplied to Aave V3
+    ///         on capture, withdrawn on claim. Set once at construction.
+    address public immutable usdc;
+
+    /// @notice Thrown by `_afterInitialize` when neither pool currency is USDC.
+    /// @dev Holdfast requires the pool to contain USDC as one of its two tokens.
+    ///      See DESIGN.md Limitations (Non-USDC pools out of scope).
+    error PoolMissingUSDC();
 
     event PositionOpened(
         bytes32 indexed positionKey,
@@ -102,9 +110,10 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
     event PositionClosed(bytes32 indexed positionKey, address indexed owner, uint256 accumulatedScore, int256 realizedIL, uint128 frozenAt);
     event PoolInitialized(PoolId indexed poolId, uint160 sqrtPriceX96, int24 tick);
 
-    constructor(IPoolManager _poolManager, HoldfastNFT _nft, YieldRouter _yieldRouter) BaseHook(_poolManager) {
+    constructor(IPoolManager _poolManager, HoldfastNFT _nft, YieldRouter _yieldRouter, address _usdc) BaseHook(_poolManager) {
         nft = _nft;
         yieldRouter = _yieldRouter;
+        usdc = _usdc;
     }
 
     function getHookPermissions() public pure override returns (Hooks.Permissions memory) {
@@ -120,7 +129,7 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
             beforeDonate: false,
             afterDonate: false,
             beforeSwapReturnDelta: false,
-            afterSwapReturnDelta: false,
+            afterSwapReturnDelta: true,
             afterAddLiquidityReturnDelta: false,
             afterRemoveLiquidityReturnDelta: false
         });
@@ -145,6 +154,18 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
         vol.lastVolUpdate = block.number;
         redistributionRate[poolId] = REDISTRIBUTION_RATE_DEFAULT;
         lastGlobalScoreUpdateBlock[poolId] = block.number;
+
+        // Resolve which side of the pool is USDC. Pool must contain USDC; revert otherwise.
+        // See DESIGN.md Limitations (Non-USDC pools out of scope).
+        address c0 = Currency.unwrap(key.currency0);
+        address c1 = Currency.unwrap(key.currency1);
+        if (c0 == usdc) {
+            usdcIsToken0[poolId] = true;
+        } else if (c1 == usdc) {
+            usdcIsToken0[poolId] = false;
+        } else {
+            revert PoolMissingUSDC();
+        }
 
         emit PoolInitialized(poolId, sqrtPriceX96, tick);
         return this.afterInitialize.selector;
@@ -300,14 +321,58 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
         address,
         PoolKey calldata key,
         SwapParams calldata params,
-        BalanceDelta,
+        BalanceDelta delta,
         bytes calldata
     ) internal override returns (bytes4, int128) {
         PoolId poolId = key.toId();
         uint256 vf = _updateVolatility(poolId);
         _advanceGlobalScore(poolId, vf);
-        bonusPoolUSDC += _bonusContribution(poolId, key.fee, params.amountSpecified, vf);
-        return (this.afterSwap.selector, 0);
+
+        // Capture only when USDC is the swap's UNSPECIFIED currency. The afterSwap
+        // hookDelta return value is applied by PoolManager to the unspecified currency;
+        // if USDC is specified, returning a delta would credit/debit the wrong currency
+        // and break settlement (see DESIGN.md Limitations on capture coverage).
+        //
+        // Mapping:
+        //   exactIn  (amountSpecified < 0): specified = input  currency
+        //   exactOut (amountSpecified > 0): specified = output currency
+        //   zeroForOne = true  -> input = currency0, output = currency1
+        //   zeroForOne = false -> input = currency1, output = currency0
+        bool isToken0 = usdcIsToken0[poolId];
+        bool exactIn = params.amountSpecified < 0;
+        bool usdcIsSpecified;
+        if (exactIn) {
+            usdcIsSpecified = (isToken0 == params.zeroForOne);
+        } else {
+            usdcIsSpecified = (isToken0 != params.zeroForOne);
+        }
+        if (usdcIsSpecified) {
+            return (this.afterSwap.selector, 0);
+        }
+
+        // USDC is unspecified. Read its delta from BalanceDelta and capture a fraction.
+        int128 usdcSideDelta = isToken0 ? delta.amount0() : delta.amount1();
+        uint256 usdcAbs = usdcSideDelta < 0
+            ? uint256(uint128(-usdcSideDelta))
+            : uint256(uint128(usdcSideDelta));
+
+        uint256 captureRate = (redistributionRate[poolId] * _volatilityMultiplier(vf)) / WAD;
+        uint256 captureAmt = (usdcAbs * captureRate) / WAD;
+        if (captureAmt == 0) {
+            return (this.afterSwap.selector, 0);
+        }
+
+        // Take captured USDC from PoolManager into the YieldRouter, then supply to Aave V3.
+        // Returning a positive hookDelta on the unspecified currency offsets the take(),
+        // so the PoolManager's accounting nets to zero for the hook and the redistribution
+        // is funded by reducing the LP-direct fee accrual, not an extra swapper payment.
+        poolManager.take(Currency.wrap(usdc), address(yieldRouter), captureAmt);
+        yieldRouter.supplyToAave(captureAmt);
+
+        // captureAmt is bounded by the USDC side of a single swap delta, which the
+        // PoolManager itself stores as int128; the downcast cannot overflow in practice.
+        // forge-lint: disable-next-line(unsafe-typecast)
+        return (this.afterSwap.selector, int128(int256(captureAmt)));
     }
 
     function _updateVolatility(PoolId poolId) internal returns (uint256 vf) {
@@ -330,14 +395,6 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
         lastGlobalScoreUpdateBlock[poolId] = block.number;
     }
 
-    function _bonusContribution(PoolId poolId, uint24 fee, int256 amt, uint256 vf)
-        internal view returns (uint256)
-    {
-        uint256 m = _volatilityMultiplier(vf);
-        uint256 a = amt < 0 ? uint256(-amt) : uint256(amt);
-        uint256 poolFeeWad = uint256(fee) * WAD / 1e6;
-        return (a * poolFeeWad / WAD) * (redistributionRate[poolId] * m / WAD) / WAD;
-    }
 
     function _orderedObservations(PoolVolatility storage vol)
         internal

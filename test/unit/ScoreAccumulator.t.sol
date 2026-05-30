@@ -45,6 +45,20 @@ contract ScoreAccumulatorTest is Test {
         assertGt(medium, wide);
     }
 
+    /// @notice 1-tick range farming attack mitigation: logarithmic narrowness
+    ///         bounds the score amplification an attacker can achieve with an
+    ///         extremely narrow range. The minimum-liquidity half of the
+    ///         DESIGN.md mitigation is not implemented in this version; this
+    ///         test asserts the half that IS in code, the log bound.
+    function test_rangeNarrowness_logBounded() public pure {
+        uint256 oneTick = ScoreAccumulator.calculateRangeNarrowness(-1, 1);
+        uint256 typical = ScoreAccumulator.calculateRangeNarrowness(-60, 60);
+        uint256 wide    = ScoreAccumulator.calculateRangeNarrowness(-6000, 6000);
+
+        assertLt(oneTick * WAD / typical, 4 * WAD, "1-tick narrowness exceeds 4x typical");
+        assertLt(oneTick * WAD / wide, 10 * WAD, "1-tick narrowness exceeds 10x wide");
+    }
+
     function test_rangeNarrowness_revertOnInvalid() public {
         vm.expectRevert(ScoreAccumulator.InvalidTickRange.selector);
         this.callRangeNarrowness(100, 100);

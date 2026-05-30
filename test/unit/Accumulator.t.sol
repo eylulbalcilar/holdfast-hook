@@ -27,7 +27,7 @@ contract AccumulatorTest is HoldfastHookBase {
         modifyLiquidityRouter.modifyLiquidity(
             poolKey,
             ModifyLiquidityParams({tickLower: TICK_LOWER, tickUpper: TICK_UPPER, liquidityDelta: liq, salt: salt}),
-            ""
+            _ownerHookData()
         );
         key = Position.calculatePositionKey(address(modifyLiquidityRouter), TICK_LOWER, TICK_UPPER, salt);
     }
@@ -46,7 +46,7 @@ contract AccumulatorTest is HoldfastHookBase {
         modifyLiquidityRouter.modifyLiquidity(
             poolKey,
             ModifyLiquidityParams({tickLower: TICK_LOWER, tickUpper: TICK_UPPER, liquidityDelta: negDelta, salt: salt}),
-            ""
+            _ownerHookData()
         );
     }
 

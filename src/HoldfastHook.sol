@@ -94,6 +94,12 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
     ///      See DESIGN.md Limitations (Non-USDC pools out of scope).
     error PoolMissingUSDC();
 
+    /// @notice Thrown when a liquidity callback receives empty `hookData`.
+    /// @dev    Owner cannot be resolved from `msg.sender` (which is the PoolManager
+    ///         or a router contract), so callers MUST pass `abi.encode(lpOwner)` as
+    ///         hookData on every modifyLiquidity call routed through this hook.
+    error HookDataMissing();
+
     event PositionOpened(
         bytes32 indexed positionKey,
         address indexed owner,
@@ -172,19 +178,22 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
     }
 
     function _afterAddLiquidity(
-        address sender,
+        address,
         PoolKey calldata key,
         ModifyLiquidityParams calldata params,
         BalanceDelta,
         BalanceDelta,
-        bytes calldata
+        bytes calldata hookData
     ) internal override returns (bytes4, BalanceDelta) {
         // Defensive: only handle positive deltas. Removes go through afterRemoveLiquidity.
         if (params.liquidityDelta <= 0) {
             return (this.afterAddLiquidity.selector, BalanceDelta.wrap(0));
         }
 
-        bytes32 positionKey = _positionKey(sender, params.tickLower, params.tickUpper, params.salt);
+        // Owner resolved from hookData (not msg.sender, which is the PoolManager).
+        // See DESIGN.md State section ("hookData-based owner resolution").
+        address owner = _decodeOwner(hookData);
+        bytes32 positionKey = _positionKey(owner, params.tickLower, params.tickUpper, params.salt);
         PositionStreak storage s = streaks[positionKey];
 
         if (!s.isActive && s.firstActiveBlock == 0) {
@@ -201,7 +210,7 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
 
             emit PositionOpened(
                 positionKey,
-                sender,
+                owner,
                 key.toId(),
                 params.tickLower,
                 params.tickUpper,
@@ -222,7 +231,7 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
 
             emit PositionOpened(
                 positionKey,
-                sender,
+                owner,
                 key.toId(),
                 params.tickLower,
                 params.tickUpper,
@@ -241,12 +250,13 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
     }
 
     function _beforeRemoveLiquidity(
-        address sender,
+        address,
         PoolKey calldata key,
         ModifyLiquidityParams calldata params,
-        bytes calldata
+        bytes calldata hookData
     ) internal override returns (bytes4) {
-        bytes32 positionKey = _positionKey(sender, params.tickLower, params.tickUpper, params.salt);
+        address owner = _decodeOwner(hookData);
+        bytes32 positionKey = _positionKey(owner, params.tickLower, params.tickUpper, params.salt);
         PositionStreak storage s = streaks[positionKey];
 
         // No streak (unknown position) or already frozen: nothing to compute.
@@ -270,20 +280,21 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
 
         // Lazy tier evaluation: claim time may cross a tier threshold for an LP
         // who has accrued enough score and tenure since the last interaction.
-        _evaluateAndMaybeMint(positionKey, sender);
+        _evaluateAndMaybeMint(positionKey, owner);
 
         return this.beforeRemoveLiquidity.selector;
     }
 
     function _afterRemoveLiquidity(
-        address sender,
+        address,
         PoolKey calldata key,
         ModifyLiquidityParams calldata params,
         BalanceDelta,
         BalanceDelta,
-        bytes calldata
+        bytes calldata hookData
     ) internal override returns (bytes4, BalanceDelta) {
-        bytes32 positionKey = _positionKey(sender, params.tickLower, params.tickUpper, params.salt);
+        address owner = _decodeOwner(hookData);
+        bytes32 positionKey = _positionKey(owner, params.tickLower, params.tickUpper, params.salt);
         PositionStreak storage s = streaks[positionKey];
 
         // Unknown position (never opened through the hook): no-op.
@@ -299,7 +310,7 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
             // accumulatedScore is preserved so a future re-entry resumes the streak.
             s.isActive = false;
             s.frozenAt = uint128(block.number);
-            emit PositionClosed(positionKey, sender, s.accumulatedScore, s.realizedIL, uint128(block.number));
+            emit PositionClosed(positionKey, owner, s.accumulatedScore, s.realizedIL, uint128(block.number));
         } else {
             // Partial closure: liquidityShare in the score formula adjusts on the
             // next afterSwap accrual. Only bump the lazy-update cursor here.
@@ -475,6 +486,13 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
             s.currentTier = nextTier;
             emit TierUpgraded(positionKey, s.nftTokenId, nextTier);
         }
+    }
+
+    function _decodeOwner(bytes calldata hookData) internal pure returns (address) {
+        if (hookData.length != 32) {
+            revert HookDataMissing();
+        }
+        return abi.decode(hookData, (address));
     }
 
     function _positionKey(address owner, int24 tickLower, int24 tickUpper, bytes32 salt)

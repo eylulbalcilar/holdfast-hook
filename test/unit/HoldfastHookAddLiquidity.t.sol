@@ -43,7 +43,7 @@ contract HoldfastHookAddLiquidityTest is HoldfastHookBase {
                 liquidityDelta: delta,
                 salt: salt
             }),
-            ""
+            _ownerHookData()
         );
     }
 

@@ -147,7 +147,7 @@ contract HoldfastHookFeeCaptureForkTest is Test {
                 liquidityDelta: 1_000_000 * 1e6, // arbitrary L units
                 salt: bytes32(0)
             }),
-            ""
+            abi.encode(lp)
         );
 
         uint256 aUsdcBefore = aUsdc.balanceOf(address(yieldRouter));

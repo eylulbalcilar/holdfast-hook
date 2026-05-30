@@ -55,7 +55,7 @@ contract HoldfastHookSecurityTest is HoldfastHookBase {
                 liquidityDelta: LIQ_DELTA,
                 salt: bytes32(0)
             }),
-            ""
+            _ownerHookData()
         );
         positionKey =
             Position.calculatePositionKey(address(modifyLiquidityRouter), TICK_LOWER, TICK_UPPER, bytes32(0));

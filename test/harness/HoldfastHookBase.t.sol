@@ -99,6 +99,14 @@ abstract contract HoldfastHookBase is Test {
         nft.setHook(address(harness));
     }
 
+    /// @notice Helper: returns the hookData expected by HoldfastHook lifecycle callbacks.
+    /// @dev    HoldfastHook decodes the LP owner from hookData (not msg.sender, which is the
+    ///         PoolManager / router). In these tests the LP-of-record is the modifyLiquidityRouter,
+    ///         matching how Position.calculatePositionKey is computed in assertions.
+    function _ownerHookData() internal view returns (bytes memory) {
+        return abi.encode(address(modifyLiquidityRouter));
+    }
+
     function _initHookPool(uint24 fee, int24 tickSpacing, uint160 sqrtPriceX96)
         internal
         returns (PoolKey memory k, PoolId id)

@@ -38,7 +38,7 @@ contract HoldfastHookRemoveLiquidityTest is HoldfastHookBase {
                 liquidityDelta: LIQ_DELTA,
                 salt: bytes32(0)
             }),
-            ""
+            _ownerHookData()
         );
         positionKey =
             Position.calculatePositionKey(address(modifyLiquidityRouter), TICK_LOWER, TICK_UPPER, bytes32(0));
@@ -53,7 +53,7 @@ contract HoldfastHookRemoveLiquidityTest is HoldfastHookBase {
                 liquidityDelta: negDelta,
                 salt: bytes32(0)
             }),
-            ""
+            _ownerHookData()
         );
     }
 
@@ -132,7 +132,7 @@ contract HoldfastHookRemoveLiquidityTest is HoldfastHookBase {
                 liquidityDelta: -LIQ_DELTA / 2,
                 salt: bytes32(uint256(1))
             }),
-            ""
+            _ownerHookData()
         );
 
         // The unopened position key should have IL == 0 (default).
@@ -283,7 +283,7 @@ contract HoldfastHookRemoveLiquidityTest is HoldfastHookBase {
                 liquidityDelta: LIQ_DELTA,
                 salt: bytes32(0)
             }),
-            ""
+            _ownerHookData()
         );
 
         // Score and tier preserved.

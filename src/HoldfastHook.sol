@@ -19,14 +19,17 @@ import {ScoreAccumulator} from "./libraries/ScoreAccumulator.sol";
 import {IHoldfastHook} from "./interfaces/IHoldfastHook.sol";
 import {HoldfastNFT} from "./HoldfastNFT.sol";
 import {YieldRouter} from "./YieldRouter.sol";
+import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
+import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 
 /// @title HoldfastHook
 /// @notice Uniswap v4 hook measuring IL exposure, partially compensating realized IL,
 ///         and compounding rewards via Aave V3. Authoritative source of truth for tier
 ///         eligibility (HoldfastNFT trusts this contract; see DESIGN.md Trust Boundary).
-/// @dev Lifecycle bodies are filled in subsequent steps. This skeleton wires permissions,
-///      state, tier constants, helpers, and the IHoldfastHook.settleOnTransfer stub.
-contract HoldfastHook is BaseHook, IHoldfastHook {
+/// @dev Lifecycle hooks, swap-side capture, tier accounting, and the claim flow live
+///      in this contract. HoldfastNFT trusts the hook to enforce tier eligibility before
+///      calling mint/upgradeTier (see DESIGN.md Trust Boundary).
+contract HoldfastHook is BaseHook, IHoldfastHook, ReentrancyGuard {
     uint8 internal constant TIER_NONE = 0;
     uint8 internal constant TIER_BRONZE = 1;
     uint8 internal constant TIER_SILVER = 2;
@@ -47,6 +50,16 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
     uint256 internal constant VOL_MULT_LOWER = 5e17;
     uint256 internal constant VOL_MULT_UPPER = 15e17;
     uint256 internal constant VOL_MULT_MAX = 15e17;
+
+    // Bonus pool split between tier-weighted arm (70%) and realized-IL arm (30%).
+    uint256 internal constant TIER_ARM_BPS = 7000;
+    uint256 internal constant IL_ARM_BPS = 3000;
+    uint256 internal constant BPS_DENOM = 10_000;
+
+    // Tier-weighted arm allocation across tiers.
+    uint256 internal constant BRONZE_ALLOC_BPS = 2500;
+    uint256 internal constant SILVER_ALLOC_BPS = 3500;
+    uint256 internal constant GOLD_ALLOC_BPS = 4000;
 
     struct PositionStreak {
         uint256 accumulatedScore;
@@ -122,6 +135,17 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
     event RealizedILComputed(bytes32 indexed positionKey, int256 il, uint160 currentSqrtPriceX96);
     event PositionClosed(bytes32 indexed positionKey, address indexed owner, uint256 accumulatedScore, int256 realizedIL, uint128 frozenAt);
     event PoolInitialized(PoolId indexed poolId, uint160 sqrtPriceX96, int24 tick);
+    event Claimed(
+        uint256 indexed tokenId,
+        bytes32 indexed positionKey,
+        address indexed claimer,
+        uint256 tierShareUsdc,
+        uint256 ilShareUsdc,
+        uint256 totalPaidUsdc
+    );
+
+    error NotNftOwner();
+    error NothingToClaim();
 
     constructor(IPoolManager _poolManager, HoldfastNFT _nft, YieldRouter _yieldRouter, address _usdc) BaseHook(_poolManager) {
         nft = _nft;
@@ -444,8 +468,88 @@ contract HoldfastHook is BaseHook, IHoldfastHook {
         return WAD + ((volatilityFactor - VOL_MULT_LOWER) * 5e17) / WAD;
     }
 
+    /// @notice Claim the caller's tier-weighted and realized-IL bonus pool shares for a position.
+    /// @dev    Authorization: msg.sender must be the current ERC-721 owner of `tokenId`.
+    ///         Computes shares against current sumOfTierScores and sumOfAbsoluteIL,
+    ///         withdraws from Aave V3 via the YieldRouter (partial-fill safe), and
+    ///         transfers USDC to the caller. Checks-effects-interactions ordering plus
+    ///         ReentrancyGuard.
+    /// @param  tokenId The HoldfastNFT tokenId identifying the position to claim against.
+    function claim(uint256 tokenId) external nonReentrant {
+        if (nft.ownerOf(tokenId) != msg.sender) revert NotNftOwner();
+
+        bytes32 positionKey = nft.tokenIdToPositionKey(tokenId);
+        PositionStreak storage s = streaks[positionKey];
+
+        // Total bonus pool is the YieldRouter's aUSDC balance (Aave supply + yield).
+        uint256 totalBonusUsdc = IERC20(yieldRouter.aUsdc()).balanceOf(address(yieldRouter));
+
+        uint256 tierShareUsdc = _computeTierShareUsdc(s, totalBonusUsdc);
+        uint256 ilShareUsdc = _computeIlShareUsdc(s, totalBonusUsdc);
+        uint256 totalUsdc = tierShareUsdc + ilShareUsdc;
+
+        if (totalUsdc == 0) revert NothingToClaim();
+
+        // Effects: consume this position's contribution to the protocol-wide denominators.
+        // accumulatedScore and realizedIL stay zeroed on the struct so the next claim
+        // returns NothingToClaim until new score or IL accrues.
+        if (tierShareUsdc > 0 && s.currentTier != TIER_NONE) {
+            sumOfTierScores[s.currentTier] -= s.accumulatedScore;
+            s.accumulatedScore = 0;
+        }
+        if (ilShareUsdc > 0 && s.realizedIL < 0) {
+            sumOfAbsoluteIL -= uint256(-s.realizedIL);
+            s.realizedIL = 0;
+        }
+
+        // Interactions: withdraw from Aave (partial-fill safe), then forward.
+        uint256 actualPaid = yieldRouter.withdrawFromAave(totalUsdc);
+        if (actualPaid > 0) {
+            // Native Circle USDC reverts on failure; defensive check covers non-standard implementations.
+            require(IERC20(usdc).transfer(msg.sender, actualPaid), "HoldfastHook: usdc transfer failed");
+        }
+
+        emit Claimed(tokenId, positionKey, msg.sender, tierShareUsdc, ilShareUsdc, actualPaid);
+    }
+
+    /// @dev tierShare = totalBonusPool * (TIER_ARM_BPS / BPS_DENOM)
+    ///                * (tierAllocBps / BPS_DENOM)
+    ///                * (userScore / sumOfTierScores[tier])
+    function _computeTierShareUsdc(PositionStreak storage s, uint256 totalBonusUsdc)
+        internal
+        view
+        returns (uint256)
+    {
+        uint8 tier = s.currentTier;
+        if (tier == TIER_NONE) return 0;
+        uint256 denom = sumOfTierScores[tier];
+        if (denom == 0 || s.accumulatedScore == 0) return 0;
+        uint256 tierAlloc;
+        if (tier == TIER_BRONZE) tierAlloc = BRONZE_ALLOC_BPS;
+        else if (tier == TIER_SILVER) tierAlloc = SILVER_ALLOC_BPS;
+        else tierAlloc = GOLD_ALLOC_BPS;
+        return (totalBonusUsdc * TIER_ARM_BPS * tierAlloc * s.accumulatedScore)
+             / (BPS_DENOM * BPS_DENOM * denom);
+    }
+
+    /// @dev ilShare = totalBonusPool * (IL_ARM_BPS / BPS_DENOM)
+    ///              * (|userIL| / sumOfAbsoluteIL)
+    function _computeIlShareUsdc(PositionStreak storage s, uint256 totalBonusUsdc)
+        internal
+        view
+        returns (uint256)
+    {
+        if (s.realizedIL >= 0) return 0;
+        uint256 absIl = uint256(-s.realizedIL);
+        uint256 denom = sumOfAbsoluteIL;
+        if (denom == 0) return 0;
+        return (totalBonusUsdc * IL_ARM_BPS * absIl) / (BPS_DENOM * denom);
+    }
+
     /// @inheritdoc IHoldfastHook
-    /// @dev Stub: real settlement logic lands in Day 7-8 once bonus pool accounting exists.
+    /// @dev Settle accrued bonus to the original owner on every non-mint NFT transfer.
+    ///      Implementation is a placeholder; transfer settlement is wired together with
+    ///      the claim flow's pendingClaim mapping.
     function settleOnTransfer(bytes32 positionKey, address from, address to) external {
         require(msg.sender == address(nft), "HoldfastHook: only nft");
         positionKey; from; to;

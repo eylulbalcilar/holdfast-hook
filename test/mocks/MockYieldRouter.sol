@@ -11,6 +11,16 @@ contract MockYieldRouter {
     event SupplyCalled(uint256 amount);
     event WithdrawCalled(uint256 amount);
 
+    /// @notice Mock points aUsdc at itself so balanceOf calls do not revert; the
+    ///         returned balance is always zero. Tests that need real payout math should
+    ///         use a real YieldRouter against an Aave fork.
+    address public aUsdc = address(this);
+
+    /// @notice ERC20-compatible balanceOf stub returning zero.
+    function balanceOf(address) external pure returns (uint256) {
+        return 0;
+    }
+
     function supplyToAave(uint256 amount) external {
         emit SupplyCalled(amount);
     }

@@ -75,6 +75,19 @@ contract HoldfastHookHarness is HoldfastHook {
         streaks[positionKey].accumulatedScore = score;
     }
 
+    /// @notice Test-only: seed a position's accumulatedScore and firstActiveBlock so
+    ///         _evaluateAndMaybeMint can be exercised without running a full swap loop.
+    function exposed_setStreakForTest(bytes32 positionKey, uint256 accumulatedScore, uint256 firstActiveBlock) external {
+        PositionStreak storage st = streaks[positionKey];
+        st.accumulatedScore = accumulatedScore;
+        st.firstActiveBlock = firstActiveBlock;
+    }
+
+    /// @notice Test-only: zero out a position's accumulatedScore (models post-claim state).
+    function exposed_zeroStreakScoreForTest(bytes32 positionKey) external {
+        streaks[positionKey].accumulatedScore = 0;
+    }
+
     function exposed_volatilityMultiplier(uint256 volatilityFactor) external pure returns (uint256) {
         return _volatilityMultiplier(volatilityFactor);
     }

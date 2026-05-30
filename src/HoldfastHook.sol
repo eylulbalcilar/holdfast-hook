@@ -93,6 +93,11 @@ contract HoldfastHook is BaseHook, IHoldfastHook, ReentrancyGuard {
 
     /// @notice Sum of |realizedIL| across closed positions not yet claimed.
     uint256 public sumOfAbsoluteIL;
+
+    /// @notice USDC owed to an address from a prior settleOnTransfer payout where the
+    ///         Aave withdraw failed or partially filled. Drained on the next claim or
+    ///         can be retried directly via withdrawPendingClaim.
+    mapping(address => uint256) public pendingClaim;
     mapping(PoolId => bool) public usdcIsToken0;
 
     using PoolIdLibrary for PoolKey;
@@ -135,6 +140,16 @@ contract HoldfastHook is BaseHook, IHoldfastHook, ReentrancyGuard {
     event RealizedILComputed(bytes32 indexed positionKey, int256 il, uint160 currentSqrtPriceX96);
     event PositionClosed(bytes32 indexed positionKey, address indexed owner, uint256 accumulatedScore, int256 realizedIL, uint128 frozenAt);
     event PoolInitialized(PoolId indexed poolId, uint160 sqrtPriceX96, int24 tick);
+    event SettledOnTransfer(
+        bytes32 indexed positionKey,
+        address indexed from,
+        address indexed to,
+        uint256 paidUsdc,
+        uint256 pendingAdded
+    );
+
+    event PendingClaimWithdrawn(address indexed recipient, uint256 paidUsdc);
+
     event Claimed(
         uint256 indexed tokenId,
         bytes32 indexed positionKey,
@@ -547,12 +562,73 @@ contract HoldfastHook is BaseHook, IHoldfastHook, ReentrancyGuard {
     }
 
     /// @inheritdoc IHoldfastHook
-    /// @dev Settle accrued bonus to the original owner on every non-mint NFT transfer.
-    ///      Implementation is a placeholder; transfer settlement is wired together with
-    ///      the claim flow's pendingClaim mapping.
+    /// @dev Settle the outgoing owner's accrued bonus on every non-mint NFT transfer.
+    ///      Mirrors `claim` payout math, then zeroes the position's contribution to
+    ///      the protocol-wide denominators so the incoming owner accrues from scratch.
+    ///      Currency-tier state (currentTier, nftTokenId) is preserved because the NFT
+    ///      itself carries tier across transfers. If the Aave withdraw partial-fills or
+    ///      reverts, the unpaid remainder is written to `pendingClaim[from]`; the
+    ///      transfer always completes (a yield-protocol failure must not block ERC-721
+    ///      transferability). See DESIGN.md NFT Mechanics "Transfer settlement".
     function settleOnTransfer(bytes32 positionKey, address from, address to) external {
         require(msg.sender == address(nft), "HoldfastHook: only nft");
-        positionKey; from; to;
+        // `to` is unused: the incoming owner has no accrual to settle. Suppress warning.
+        to;
+
+        PositionStreak storage s = streaks[positionKey];
+
+        uint256 totalBonusUsdc = IERC20(yieldRouter.aUsdc()).balanceOf(address(yieldRouter));
+        uint256 tierShareUsdc = _computeTierShareUsdc(s, totalBonusUsdc);
+        uint256 ilShareUsdc = _computeIlShareUsdc(s, totalBonusUsdc);
+        uint256 totalUsdc = tierShareUsdc + ilShareUsdc;
+
+        if (totalUsdc == 0) {
+            emit SettledOnTransfer(positionKey, from, to, 0, 0);
+            return;
+        }
+
+        // Effects: consume the outgoing owner's contribution to the denominators.
+        if (tierShareUsdc > 0 && s.currentTier != TIER_NONE) {
+            sumOfTierScores[s.currentTier] -= s.accumulatedScore;
+            s.accumulatedScore = 0;
+        }
+        if (ilShareUsdc > 0 && s.realizedIL < 0) {
+            sumOfAbsoluteIL -= uint256(-s.realizedIL);
+            s.realizedIL = 0;
+        }
+
+        // Interactions: try to pay out now; on partial fill record the shortfall.
+        uint256 actualPaid = yieldRouter.withdrawFromAave(totalUsdc);
+        uint256 pendingAdded;
+        if (actualPaid > 0) {
+            require(IERC20(usdc).transfer(from, actualPaid), "HoldfastHook: usdc transfer failed");
+        }
+        if (actualPaid < totalUsdc) {
+            pendingAdded = totalUsdc - actualPaid;
+            pendingClaim[from] += pendingAdded;
+        }
+
+        emit SettledOnTransfer(positionKey, from, to, actualPaid, pendingAdded);
+    }
+
+    /// @notice Drain the caller's pendingClaim balance from prior failed settleOnTransfer
+    ///         payouts. Partial-fill safe: a second failure re-credits pendingClaim.
+    function withdrawPendingClaim() external nonReentrant {
+        uint256 owed = pendingClaim[msg.sender];
+        if (owed == 0) revert NothingToClaim();
+
+        // Effects-first: zero the balance, then withdraw + transfer. Any shortfall on
+        // the withdraw is re-credited so the caller can retry.
+        pendingClaim[msg.sender] = 0;
+        uint256 actualPaid = yieldRouter.withdrawFromAave(owed);
+        if (actualPaid > 0) {
+            require(IERC20(usdc).transfer(msg.sender, actualPaid), "HoldfastHook: usdc transfer failed");
+        }
+        if (actualPaid < owed) {
+            pendingClaim[msg.sender] += (owed - actualPaid);
+        }
+
+        emit PendingClaimWithdrawn(msg.sender, actualPaid);
     }
 
     /// @notice Lazy tier evaluation: check the dual criterion and call into the NFT

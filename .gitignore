@@ -9,7 +9,8 @@ broadcast/
 .env.local
 
 # IDE
-.vscode/
+.vscode/*
+!.vscode/settings.json
 .idea/
 *.swp
 .DS_Store

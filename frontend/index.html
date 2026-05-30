@@ -1,0 +1,40 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <title>Holdfast</title>
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Holdfast</h1>
+    <p class="subtitle">UHI9 capstone, Uniswap v4 hook</p>
+    <button id="connect-btn">Connect Wallet</button>
+    <span id="wallet-status">Not connected</span>
+  </header>
+
+  <main>
+    <section id="pool-state">
+      <h2>Pool State</h2>
+      <div id="pool-state-body">Loading...</div>
+    </section>
+
+    <section id="bonus-pool">
+      <h2>Bonus Pool</h2>
+      <div id="bonus-pool-body">Loading...</div>
+    </section>
+
+    <section id="positions">
+      <h2>Your Positions</h2>
+      <div id="positions-body">Connect wallet to view positions</div>
+    </section>
+
+    <section id="tx-status">
+      <h2>Transaction</h2>
+      <div id="tx-status-body">Idle</div>
+    </section>
+  </main>
+
+  <script type="module" src="script.js"></script>
+</body>
+</html>

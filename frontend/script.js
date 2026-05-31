@@ -399,5 +399,15 @@ console.log("[holdfast] target:", CURRENT.network.name, "chainId:", CURRENT.netw
 
 (async () => {
   const ok = await loadDeployment();
-  if (ok) await refreshAll();
+  if (!ok) return;
+  await refreshAll();
+
+  // Watch new blocks and refresh on each one
+  publicClient.watchBlockNumber({
+    onBlockNumber: (bn) => {
+      console.log("[holdfast] new block:", bn.toString());
+      refreshAll();
+    },
+    pollingInterval: 4000,
+  });
 })();

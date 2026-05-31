@@ -28,3 +28,5 @@ venv/
 # Coverage
 lcov.info
 coverage/
+frontend/deployments/*
+!frontend/deployments/.gitkeep

@@ -23,10 +23,64 @@ For the complete specification (mechanics, formulas, attack vectors, design deci
 
 Four contracts:
 
-- `HoldfastHook.sol` — v4 lifecycle integration
-- `HoldfastNFT.sol` — ERC-721 tier representation with mutable metadata
-- `ScoreAccumulator.sol` — pure library for score and realized IL math
-- `YieldRouter.sol` — Aave V3 supply/withdraw
+- `src/HoldfastHook.sol` v4 lifecycle integration: afterInitialize, afterAddLiquidity, beforeSwap, afterSwap, beforeRemoveLiquidity, afterRemoveLiquidity, claim, settleOnTransfer
+- `src/HoldfastNFT.sol` ERC-721 tier representation with mutable metadata, OpenZeppelin v5 `_update` callback for accrual-theft prevention
+- `src/libraries/ScoreAccumulator.sol` pure library for block score, range narrowness, volatility factor, and realized IL math
+- `src/YieldRouter.sol` Aave V3 supply/withdraw with try/catch fallback
+
+## Partner Integrations
+
+**Aave V3** is integrated as a real protocol dependency, not a mock:
+
+- `src/YieldRouter.sol` wraps Aave V3 Pool supply/withdraw
+- `src/interfaces/IAaveV3Pool.sol` minimal interface (supply, withdraw, getReserveData)
+- Bonus pool USDC is supplied to Aave V3 USDC reserve when funds accrue
+- aUSDC yield is reflected in the bonus pool balance and distributed at claim time
+- Integration is fork-tested against Base mainnet Aave V3 state in `test/fork/YieldRouter.fork.t.sol`
+- Withdrawal failure is handled with try/catch and a `pendingClaim` fallback path in `HoldfastHook.settleOnTransfer` and `HoldfastHook.claim`
+
+## Tests
+
+Run the unit suite:
+
+```bash
+forge test
+```
+
+Run fork tests (requires `BASE_RPC_URL` for Base mainnet):
+
+```bash
+export BASE_RPC_URL=https://your-base-rpc-endpoint
+forge test --match-path "test/fork/**" --fork-url $BASE_RPC_URL
+```
+
+Test summary:
+
+- 121 unit tests across `test/unit/` (10 test files)
+- 7 fork tests against Base mainnet Aave V3 (`test/fork/`)
+- Coverage includes attack vectors (whale-instant-Gold, sybil split, IL baseline immutability, reentrancy guards) and edge cases (USDC denomination requirement, hookData validation, pendingClaim retry, tier-of-one math precision)
+- 4 Python simulations under `scripts/sim/` calibrate tier thresholds, whale mitigation, net LP returns across volatility regimes, and the realized IL formula
+
+## Frontend
+
+A minimal vanilla JS frontend with viem is included in `frontend/`:
+
+- Single HTML page, no build step required
+- MetaMask wallet connect with Base Sepolia network add
+- User position display with tier badges and dual-criterion progress bars
+- Bonus pool overview (USDC tracker + Aave aUSDC balance)
+- Claim button per qualified position
+- Block polling for state refresh
+
+Run locally against Anvil:
+
+```bash
+anvil --fork-url $BASE_RPC_URL
+forge script script/Deploy.s.sol --rpc-url http://localhost:8545 --broadcast
+cd frontend && python3 -m http.server 8000
+```
+
+Open `http://localhost:8000` in a browser with MetaMask configured.
 
 ## Setup
 
@@ -44,15 +98,15 @@ forge test
 
 Copy `.env.example` to `.env` and fill in:
 
-- `BASE_SEPOLIA_RPC_URL` — RPC endpoint
-- `PRIVATE_KEY` — deployer key (testnet only)
-- `BASESCAN_API_KEY` — for contract verification
+- `BASE_SEPOLIA_RPC_URL` Base Sepolia RPC endpoint (for deployment)
+- `BASE_RPC_URL` Base mainnet RPC endpoint (for fork tests)
+- `PRIVATE_KEY` deployer key (testnet only)
+- `BASESCAN_API_KEY` for contract verification
 
 ## Status
 
-Preparation phase, day 1 of 28. Submission: June 11, 2026.
+Implementation complete. Frontend functional against local Anvil fork. Base Sepolia deployment and end-to-end testnet smoke test scheduled for week 4. Submission: June 11.
 
 ## License
 
 MIT
-EOF

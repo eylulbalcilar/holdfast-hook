@@ -1,0 +1,63 @@
+{
+  "generated_at": "20260531T153825Z",
+  "swaps_per_year": 182500,
+  "n_sequences": 100000,
+  "recommended_scale_factor": 4556872651670200237686784,
+  "recommended_scale_factor_hex": "0x3c4f48fba240060000000",
+  "results": [
+    {
+      "annualized_vol": 0.1,
+      "per_swap_price_std": 0.00023408229439226115,
+      "simulated_variance": 5.478462141251734e-08,
+      "scale_factor_sim": 1.8253297626540088e+25,
+      "theoretical_variance": 5.479452054794522e-08,
+      "scale_factor_theory": 1.8249999999999997e+25,
+      "vf_at_1wad_check": 1e+18
+    },
+    {
+      "annualized_vol": 0.2,
+      "per_swap_price_std": 0.0004681645887845223,
+      "simulated_variance": 2.194487483940278e-07,
+      "scale_factor_sim": 4.5568726516702e+24,
+      "theoretical_variance": 2.1917808219178087e-07,
+      "scale_factor_theory": 4.562499999999999e+24,
+      "vf_at_1wad_check": 1e+18
+    },
+    {
+      "annualized_vol": 0.4,
+      "per_swap_price_std": 0.0009363291775690446,
+      "simulated_variance": 8.737609166170119e-07,
+      "scale_factor_sim": 1.1444778325308424e+24,
+      "theoretical_variance": 8.767123287671235e-07,
+      "scale_factor_theory": 1.1406249999999998e+24,
+      "vf_at_1wad_check": 1e+18
+    },
+    {
+      "annualized_vol": 0.6,
+      "per_swap_price_std": 0.0014044937663535667,
+      "simulated_variance": 1.9761987998034254e-06,
+      "scale_factor_sim": 5.060219650469735e+23,
+      "theoretical_variance": 1.9726027397260274e-06,
+      "scale_factor_theory": 5.069444444444445e+23,
+      "vf_at_1wad_check": 1e+18
+    },
+    {
+      "annualized_vol": 0.8,
+      "per_swap_price_std": 0.0018726583551380892,
+      "simulated_variance": 3.51008984495062e-06,
+      "scale_factor_sim": 2.84892992536511e+23,
+      "theoretical_variance": 3.506849315068494e-06,
+      "scale_factor_theory": 2.8515624999999995e+23,
+      "vf_at_1wad_check": 1e+18
+    },
+    {
+      "annualized_vol": 1.0,
+      "per_swap_price_std": 0.0023408229439226113,
+      "simulated_variance": 5.471365514637394e-06,
+      "scale_factor_sim": 1.8276973039449246e+23,
+      "theoretical_variance": 5.479452054794521e-06,
+      "scale_factor_theory": 1.8249999999999998e+23,
+      "vf_at_1wad_check": 1e+18
+    }
+  ]
+}

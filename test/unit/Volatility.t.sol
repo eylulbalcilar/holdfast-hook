@@ -1,19 +1,18 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.26;
-
 import {Test} from "forge-std/Test.sol";
 import {ScoreAccumulator} from "../../src/libraries/ScoreAccumulator.sol";
-
 contract VolatilityTest is Test {
     uint256 constant WAD = 1e18;
     uint256 constant MAX_VF = 2 * WAD;
     uint160 constant SQRT1 = 79228162514264337593543950336;
 
-    function _steady(uint256 num, uint256 den) internal pure returns (uint160[10] memory obs) {
+    /// @dev Steady per-step move in bips (1 bip = 0.01%). Realistic per-swap sizes.
+    function _steadyBips(uint256 bips) internal pure returns (uint160[10] memory obs) {
         uint256 x = uint256(SQRT1);
         for (uint256 i = 0; i < 10; i++) {
             obs[i] = uint160(x);
-            x = x * num / den;
+            x = x * (10000 + bips) / 10000;
         }
     }
 
@@ -39,30 +38,35 @@ contract VolatilityTest is Test {
     }
 
     function test_vol_monotonicInMovement() public pure {
-        uint256 v2 = ScoreAccumulator.calculateVolatilityFactor(_steady(102, 100));
-        uint256 v5 = ScoreAccumulator.calculateVolatilityFactor(_steady(105, 100));
-        uint256 v50 = ScoreAccumulator.calculateVolatilityFactor(_steady(150, 100));
+        uint256 v1 = ScoreAccumulator.calculateVolatilityFactor(_steadyBips(1));
+        uint256 v2 = ScoreAccumulator.calculateVolatilityFactor(_steadyBips(2));
+        uint256 v5 = ScoreAccumulator.calculateVolatilityFactor(_steadyBips(5));
+        assertLt(v1, v2, "larger steps yield larger volatility");
         assertLt(v2, v5, "larger steps yield larger volatility");
-        assertLt(v5, v50, "larger steps yield larger volatility");
     }
 
+    /// @dev Reference values calibrated for SCALE_FACTOR = 1_144_477_832_530_842_431_258_624.
+    ///      Inputs are realistic per-swap bips moves (1 bip = 0.01%).
+    ///      Regenerate via scripts/sim/scale_factor_calibration.py if SCALE_FACTOR changes.
     function test_vol_referenceValues() public pure {
-        assertEq(ScoreAccumulator.calculateVolatilityFactor(_steady(102, 100)), 1599999999999996);
-        assertEq(ScoreAccumulator.calculateVolatilityFactor(_steady(105, 100)), 9999999999999996);
-        assertEq(ScoreAccumulator.calculateVolatilityFactor(_steady(150, 100)), 1000000000000000000);
+        assertEq(ScoreAccumulator.calculateVolatilityFactor(_steadyBips(1)), 45779113296655785);
+        assertEq(ScoreAccumulator.calculateVolatilityFactor(_steadyBips(2)), 183116453200356877);
+        assertEq(ScoreAccumulator.calculateVolatilityFactor(_steadyBips(5)), 1144477832526264519);
     }
 
     function test_vol_cappedAtTwoWad() public pure {
-        uint256 vf = ScoreAccumulator.calculateVolatilityFactor(_steady(300, 100));
+        // 10+ bips per swap exceeds cap with calibrated SCALE_FACTOR.
+        uint256 vf = ScoreAccumulator.calculateVolatilityFactor(_steadyBips(10));
         assertEq(vf, MAX_VF);
     }
 
     function test_vol_singleOutlierDampened() public pure {
+        // Single 5-bip outlier at obs[5], rest flat.
         uint160[10] memory single = _flat();
-        single[5] = uint160(uint256(SQRT1) * 110 / 100);
-        uint256 vfSingle = ScoreAccumulator.calculateVolatilityFactor(single);
-        uint256 vfSustained = ScoreAccumulator.calculateVolatilityFactor(_steady(110, 100));
+        single[5] = uint160(uint256(SQRT1) * 10005 / 10000);
+        uint256 vfSingle    = ScoreAccumulator.calculateVolatilityFactor(single);
+        uint256 vfSustained = ScoreAccumulator.calculateVolatilityFactor(_steadyBips(5));
         assertLt(vfSingle, vfSustained, "single outlier dampened vs sustained movement");
-        assertEq(vfSingle, 8117539026629932);
+        assertEq(vfSingle, 254201338334014853);
     }
 }

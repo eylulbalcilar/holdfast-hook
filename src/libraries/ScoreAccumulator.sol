@@ -17,9 +17,12 @@ library ScoreAccumulator {
     error ZeroSqrtPriceObservation();
 
     /// @notice Calibration scalar applied to raw variance before WAD normalization.
-    /// @dev Initial placeholder. Calibrated such that ~20% annualized historical
-    ///      volatility maps to ~1.0 WAD. Subject to refinement via scripts/sim/.
-    uint256 internal constant SCALE_FACTOR = 1e18;
+    /// @dev Calibrated via scripts/sim/scale_factor_calibration.py (N=100k Monte Carlo).
+    ///      Target: ~40% annualized volatility -> ~1.0 WAD volatilityFactor.
+    ///      At 20% vol: ~0.25 WAD (low-vol pool, minimal bonus pool effect).
+    ///      At 60%+ vol: capped at 2.0 WAD by MAX_VOLATILITY_FACTOR.
+    ///      Assumes 500 swaps/day; see scripts/sim/results/scale_factor_calibration/latest.json.
+    uint256 internal constant SCALE_FACTOR = 1_144_477_832_530_842_431_258_624;
 
     uint256 internal constant MAX_VOLATILITY_FACTOR = 2 * WAD;
 

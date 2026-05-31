@@ -55,7 +55,7 @@ UHI9 theme: "Impermanent Loss and Yield Systems"
 
 ### Contracts
 
-1. **HoldfastHook.sol**: v4 lifecycle integration (afterInitialize, afterAddLiquidity, beforeRemoveLiquidity, afterRemoveLiquidity, beforeSwap, afterSwap)
+1. **HoldfastHook.sol**: v4 lifecycle integration (afterInitialize, afterAddLiquidity, beforeRemoveLiquidity, afterRemoveLiquidity, beforeSwap, afterSwap). Requires the `AFTER_SWAP_RETURNS_DELTA` permission flag to capture real USDC from swap fees into the bonus pool; see Swap Hook Mechanics for details.
 2. **HoldfastNFT.sol**: ERC-721 with mutable metadata, IPFS pointers for three static tier images
 3. **ScoreAccumulator.sol**: Pure library for score calculation and realized IL math
 4. **YieldRouter.sol**: Aave V3 supply/withdraw operations, aToken accounting
@@ -228,6 +228,8 @@ Claim payout = tier-weighted share + realized-IL share. Both are computed in WAD
 
 Rejected alternative: `claim(bytes32 positionKey)` with hook-side owner verification. Rejected because it would require the hook to maintain a positionKey-to-owner mapping in parallel with the NFT, doubling the authorization surface for no functional gain. Routing all claim authorization through `NFT.ownerOf` keeps the trust boundary clean (see Trust Boundary design decision).
 
+The `claim` and `withdrawPendingClaim` paths are guarded by OpenZeppelin's `ReentrancyGuard.nonReentrant` modifier.
+
 ### YieldRouter (Aave V3 Integration)
 
 The bonus pool is held as real USDC and supplied to Aave V3 between funding and claim. `YieldRouter` is a thin adapter contract that owns the USDC balance, supplies it to Aave V3's USDC reserve, and withdraws on claim. aToken accounting is delegated to Aave (scaled balance pattern), so the router does not maintain a separate yield ledger.
@@ -270,7 +272,7 @@ NFT serves as a claim accounting primitive: tier indicator, per-position isolate
 
 **Transfer settlement (`settleOnTransfer`).** On every non-mint transfer, `HoldfastNFT._update` invokes `IHoldfastHook.settleOnTransfer(positionKey, from, to)` synchronously before the transfer completes. The hook computes the accrued bonus owed to `from`, attempts payout via `YieldRouter.withdrawFromAave`, and resets position bonus state so that the new owner accrues from a clean baseline.
 
-Failure semantics: if the Aave withdraw partial-fills or returns zero, the unpaid remainder is written to `pendingClaim[from]`, a per-address mapping that the original owner can drain via the normal `claim` flow at a later block. The transfer always completes regardless of payout outcome; freezing transfers on payout failure would convert a yield-protocol failure into a transferability failure and is rejected. This matches the partial-fill semantics in Withdraw Failure Fallback.
+Failure semantics: if the Aave withdraw partial-fills or returns zero, the unpaid remainder is written to `pendingClaim[from]`, a per-address mapping that the original owner can drain via `withdrawPendingClaim()` at a later block. Note: `claim(tokenId)` is keyed to the NFT token, which the original owner no longer holds after transfer; `withdrawPendingClaim()` is the correct drain path for these pending balances. The transfer always completes regardless of payout outcome; freezing transfers on payout failure would convert a yield-protocol failure into a transferability failure and is rejected. This matches the partial-fill semantics in Withdraw Failure Fallback.
 
 ### Position Lifecycle
 
@@ -356,7 +358,7 @@ Rationale:
 
 - Self-contained hook, minimal external dependencies
 - The pool's own swap pattern is the most direct volatility signal; oracles provide aggregated or delayed data
-- 10-observation buffer + minimum liquidity threshold + 1-block flash loan delay raises manipulation cost above economic viability
+- 10-observation buffer + minimum liquidity threshold + `firstActiveBlock` snapshot (same-block whale-instant-Gold blocked by dual criterion) raises manipulation cost above economic viability
 - An optional Chainlink TWAP adapter could be added in a future version
 
 ### Linear liquidityShare, Not sqrt
@@ -415,7 +417,7 @@ If the hook implementation ever becomes shared across multiple NFT deployments o
 
 ### Aave V3, Not a Mock
 
-The composability dimension requires real protocol integration. Aave V3's Base Sepolia deployment is stable. Foundry fork tests validate integration against mainnet state. Withdraw failure paths are handled with try/catch and a fallback mechanism in the test suite.
+The composability dimension requires real protocol integration. Aave V3 integration is tested against a pinned Base mainnet fork (not Base Sepolia) because Base Sepolia's Aave reserve state is sporadic and produces flaky results; see Fork Test Target section for rationale. Withdraw failure paths are handled with try/catch and a fallback mechanism in the test suite.
 
 ### IL Compensation Is Partial
 
@@ -500,7 +502,7 @@ Holdfast's contribution is the synthesis: IL-aware scoring + realized-IL compens
 | Attack | Mitigation |
 |---|---|
 | 1-tick range farming | Logarithmic `rangeNarrowness` + minimum liquidity threshold |
-| Flash loan transient liquidity | `afterAddLiquidity` enforces a 1-block delay before score accrual |
+| Flash loan transient liquidity | `afterAddLiquidity` snapshots `firstActiveBlock`; dual criterion (score + block count) prevents same-block tier qualification, blocking flash loan transient liquidity attacks |
 | NFT transfer accrual theft | `_update` (OZ v5) callback settles to the original owner; unpaid remainder written to `pendingClaim` on Aave partial-fill |
 | Volatility manipulation (sandwich) | 10-observation ring buffer dampens single-swap impact |
 | Whale split sybil | Linear `liquidityShare` in score formula (formula-level protection) |
@@ -544,6 +546,8 @@ holdfast-hook/
 │   ├── HoldfastHook.sol
 │   ├── HoldfastNFT.sol
 │   ├── YieldRouter.sol
+│   ├── constants/
+│   │   └── Addresses.sol
 │   ├── interfaces/
 │   │   └── IHoldfastHook.sol
 │   └── libraries/
@@ -551,21 +555,32 @@ holdfast-hook/
 ├── test/
 │   ├── unit/
 │   ├── fork/
-│   └── integration/
+│   ├── harness/
+│   └── mocks/
 ├── script/
-│   └── Deploy.s.sol
+│   ├── Deploy.s.sol
+│   ├── DemoSeed.s.sol
+│   └── constants/
 ├── scripts/
 │   └── sim/
 │       ├── tier_calibration.py
 │       ├── whale_instant_gold.py
 │       ├── net_lp_returns.py
 │       ├── realized_il_check.py
+│       ├── scale_factor_calibration.py
 │       └── results/
 ├── frontend/
-│   └── index.html
+│   ├── index.html
+│   ├── script.js
+│   ├── style.css
+│   ├── config.js
+│   ├── abis/
+│   └── deployments/
+├── docs/
+│   ├── DESIGN.md
+│   └── slither-report.md
 ├── foundry.toml
-├── README.md
-└── DESIGN.md
+└── README.md
 ```
 
 ## Deployment Target

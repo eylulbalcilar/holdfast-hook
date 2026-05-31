@@ -179,6 +179,78 @@ function tierProgress(score, blocks, currentTier) {
   const pct = Math.min(scorePct, blockPct);
   return { pct, label: `${pct}% to ${nextName}` };
 }
+// --- Transaction status ---
+function setTxStatus(state, message) {
+  const body = $("tx-status-body");
+  if (state === "idle") {
+    body.innerHTML = `<p class="muted">Idle</p>`;
+  } else if (state === "pending") {
+    body.innerHTML = `<p class="tx-pending">Pending: ${message}</p>`;
+  } else if (state === "success") {
+    body.innerHTML = `<p class="tx-success">Success: ${message}</p>`;
+  } else if (state === "error") {
+    body.innerHTML = `<p class="tx-error">Error: ${message}</p>`;
+  }
+}
+
+// --- Auto-fund (dev only): give the connected account gas on Anvil ---
+async function ensureGasOnAnvil(address) {
+  if (CURRENT.network.chainId !== 31337) return;
+  try {
+    const balance = await publicClient.getBalance({ address });
+    if (balance > 10n ** 17n) return; // already has >0.1 ETH
+    await fetch(CURRENT.network.rpcUrl, {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({
+        jsonrpc: "2.0", id: 1, method: "anvil_setBalance",
+        params: [address, "0x8AC7230489E80000"], // 10 ETH
+      }),
+    });
+    console.log("[holdfast] funded", address, "with 10 ETH on Anvil");
+  } catch (err) {
+    console.warn("[holdfast] auto-fund failed:", err.message);
+  }
+}
+
+// --- Claim rewards ---
+async function claimRewards(tokenId) {
+  if (!walletClient || !account) {
+    setTxStatus("error", "Wallet not connected");
+    return;
+  }
+  setTxStatus("pending", `claim(${tokenId})`);
+
+  try {
+    const hash = await walletClient.writeContract({
+      account,
+      address: deployment.holdfastHook,
+      abi: abis.hook,
+      functionName: "claim",
+      args: [BigInt(tokenId)],
+    });
+    setTxStatus("pending", `tx ${shorten(hash)}, waiting for receipt`);
+
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    if (receipt.status === "success") {
+      setTxStatus("success", `tx ${shorten(hash)}`);
+      await refreshAll();
+    } else {
+      setTxStatus("error", `tx reverted: ${shorten(hash)}`);
+    }
+  } catch (err) {
+    console.error("[holdfast] claim failed:", err);
+    setTxStatus("error", err.shortMessage ?? err.message);
+  }
+}
+
+// --- Claim button delegation ---
+document.addEventListener("click", (e) => {
+  if (e.target.classList?.contains("claim-btn")) {
+    const tokenId = e.target.dataset.tokenId;
+    if (tokenId) claimRewards(tokenId);
+  }
+});
 
 async function renderPositions(userAddress) {
   if (!userAddress) {
@@ -277,6 +349,7 @@ async function connectWallet() {
 
     setWalletStatus(shorten(address));
     setConnectButton("Connected", true);
+    await ensureGasOnAnvil(address);
     await renderPositions(address);
   } catch (err) {
     console.error("[holdfast] connect failed:", err);

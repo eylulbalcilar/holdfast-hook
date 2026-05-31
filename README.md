@@ -105,7 +105,7 @@ Copy `.env.example` to `.env` and fill in:
 
 ## Status
 
-Implementation complete. Frontend functional against local Anvil fork. Base Sepolia deployment and end-to-end testnet smoke test scheduled for week 4. Submission: June 11.
+Implementation complete. Frontend functional against local Anvil fork. Base Sepolia deployment and end-to-end testnet smoke test in progress. Submission: June 11. Demo Day: June 19.
 
 ## License
 

@@ -72,15 +72,40 @@ async function loadDeployment() {
   return true;
 }
 
+const STATE_VIEW_ABI = [
+  { type: "function", name: "getSlot0", stateMutability: "view",
+    inputs: [{ name: "poolId", type: "bytes32" }],
+    outputs: [
+      { name: "sqrtPriceX96", type: "uint160" },
+      { name: "tick", type: "int24" },
+      { name: "protocolFee", type: "uint24" },
+      { name: "lpFee", type: "uint24" },
+    ] },
+];
+
 async function refreshPoolState() {
   try {
     const blockNumber = await publicClient.getBlockNumber();
+    let statusHtml = `<span class="stat-value muted">No pool initialized</span>`;
+    if (deployment.stateView && deployment.poolId) {
+      try {
+        const slot0 = await publicClient.readContract({
+          address: deployment.stateView, abi: STATE_VIEW_ABI, functionName: "getSlot0", args: [deployment.poolId],
+        });
+        const tick = slot0[1];
+        if (slot0[0] > 0n) {
+          statusHtml = `<span class="stat-value">Initialized (tick ${tick})</span>`;
+        }
+      } catch (e) {
+        console.warn("[holdfast] getSlot0 failed:", e.shortMessage ?? e.message);
+      }
+    }
     $("pool-state-body").innerHTML = `
       <div class="stat-row"><span class="stat-label">Hook</span><span class="stat-value">${shorten(deployment.holdfastHook)}</span></div>
       <div class="stat-row"><span class="stat-label">NFT</span><span class="stat-value">${shorten(deployment.holdfastNFT)}</span></div>
       <div class="stat-row"><span class="stat-label">Yield Router</span><span class="stat-value">${shorten(deployment.yieldRouter)}</span></div>
       <div class="stat-row"><span class="stat-label">Block</span><span class="stat-value">${blockNumber.toString()}</span></div>
-      <div class="stat-row"><span class="stat-label">Status</span><span class="stat-value muted">No pool initialized</span></div>
+      <div class="stat-row"><span class="stat-label">Status</span>${statusHtml}</div>
     `;
   } catch (err) {
     console.error("[holdfast] refreshPoolState failed:", err);
@@ -119,8 +144,19 @@ async function refreshBonusPool() {
 }
 
 async function findUserTokenIds(userAddress) {
-  // Anvil fork delegates eth_getLogs to Alchemy. Free tier caps query ranges,
-  // so we scan in small chunks across a recent window.
+  // Fast path: if the user holds no NFT there are no positions to render,
+  // so skip the log scan entirely and avoid a slow or hanging getLogs loop.
+  try {
+    const nftBalance = await publicClient.readContract({
+      address: deployment.holdfastNFT, abi: erc20Abi, functionName: "balanceOf", args: [userAddress],
+    });
+    if (nftBalance === 0n) return [];
+  } catch (err) {
+    console.warn("[holdfast] NFT balanceOf failed:", err.shortMessage ?? err.message);
+    return [];
+  }
+  // The user holds at least one NFT. Scan recent Transfer logs in small chunks
+  // to recover the owned token ids (log range caps vary by RPC provider).
   const currentBlock = await publicClient.getBlockNumber();
   const CHUNK = 9n;
   const MAX_LOOKBACK = 100n;
@@ -259,7 +295,13 @@ async function renderPositions(userAddress) {
   }
   $("positions-body").innerHTML = `<p class="muted">Loading positions...</p>`;
 
-  const tokenIds = await findUserTokenIds(userAddress);
+  let tokenIds = [];
+  try {
+    tokenIds = await findUserTokenIds(userAddress);
+  } catch (err) {
+    $("positions-body").innerHTML = `<p class="muted">Could not load positions: ${err.shortMessage ?? err.message}</p>`;
+    return;
+  }
   if (tokenIds.length === 0) {
     $("positions-body").innerHTML = `<p class="muted">No positions yet. Add liquidity to a Holdfast pool to start.</p>`;
     return;

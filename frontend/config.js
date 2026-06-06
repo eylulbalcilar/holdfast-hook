@@ -1,7 +1,7 @@
 // Holdfast frontend config.
 // Switch ENV between "anvil" and "sepolia" to retarget.
 
-export const ENV = "anvil";
+export const ENV = "sepolia";
 
 export const NETWORKS = {
   anvil: {
@@ -13,7 +13,7 @@ export const NETWORKS = {
   sepolia: {
     chainId: 84532,
     name: "Base Sepolia",
-    rpcUrl: "https://sepolia.base.org",
+    rpcUrl: "https://base-sepolia-rpc.publicnode.com",
     blockExplorer: "https://sepolia.basescan.org",
   },
 };
@@ -30,13 +30,14 @@ export const ADDRESSES = {
     poolId: "0x0000000000000000000000000000000000000000000000000000000000000000",
   },
   sepolia: {
-    holdfastHook: "0x0000000000000000000000000000000000000000",
-    holdfastNFT: "0x0000000000000000000000000000000000000000",
-    yieldRouter: "0x0000000000000000000000000000000000000000",
-    poolManager: "0x0000000000000000000000000000000000000000",
-    usdc: "0x0000000000000000000000000000000000000000",
-    aUSDC: "0x0000000000000000000000000000000000000000",
-    poolId: "0x0000000000000000000000000000000000000000000000000000000000000000",
+    holdfastHook: "0xE793eaf666ED37ef8573784f8c5fc33920dF57c4",
+    holdfastNFT: "0x5a3a19952E6eeAA2f5bF41977ffbF1C106092097",
+    yieldRouter: "0x0F77E49237c88242652788dfCC829a61AA250C1A",
+    poolManager: "0x05E73354cFDd6745C338b50BcFDfA3Aa6fA03408",
+    stateView: "0x571291b572ed32ce6751a2Cb2486EbEe8DEfB9B4",
+    usdc: "0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f",
+    aUSDC: "0x10F1A9D11CDf50041f3f8cB7191CBE2f31750ACC",
+    poolId: "0x10ad9a3049c38eca566db11f305f4663ff7b68a2022a860e97e99d69dddebe9f",
   },
 };
 

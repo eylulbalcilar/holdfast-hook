@@ -2,6 +2,7 @@
 pragma solidity ^0.8.26;
 
 import {HoldfastHookBase} from "../harness/HoldfastHookBase.t.sol";
+import {HoldfastHook} from "../../src/HoldfastHook.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
 import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 import {Currency} from "v4-core/types/Currency.sol";
@@ -56,21 +57,9 @@ contract HoldfastHookAddLiquidityTest is HoldfastHookBase {
     function _readStreak(bytes32 key)
         internal
         view
-        returns (
-            uint256 accumulatedScore,
-            uint256 lastUpdateBlock,
-            uint256 lastGlobalScoreSnapshot,
-            uint256 firstActiveBlock,
-            uint160 entrySqrtPriceX96,
-            uint8 currentTier,
-            uint256 nftTokenId,
-            uint128 frozenAt,
-            bool isActive,
-            int256 realizedIL,
-            uint128 liquidity
-        )
+        returns (HoldfastHook.PositionStreak memory)
     {
-        return harness.streaks(key);
+        return harness.getStreak(key);
     }
 
     // -----------------------------------------------------------------
@@ -82,19 +71,14 @@ contract HoldfastHookAddLiquidityTest is HoldfastHookBase {
         _addLiq(TICK_LOWER, TICK_UPPER, LIQ_DELTA, bytes32(0));
 
         bytes32 key = _streakKey(TICK_LOWER, TICK_UPPER, bytes32(0));
-        (
-            uint256 accumulatedScore,
-            uint256 lastUpdateBlock,
-            ,
-            uint256 firstActiveBlock,
-            uint160 entrySqrtPriceX96,
-            uint8 currentTier,
-            ,
-            uint128 frozenAt,
-            bool isActive,
-            ,
-            
-        ) = _readStreak(key);
+        HoldfastHook.PositionStreak memory sA = _readStreak(key);
+        uint256 accumulatedScore = sA.accumulatedScore;
+        uint256 lastUpdateBlock = sA.lastUpdateBlock;
+        uint256 firstActiveBlock = sA.firstActiveBlock;
+        uint160 entrySqrtPriceX96 = sA.entrySqrtPriceX96;
+        uint8 currentTier = sA.currentTier;
+        uint128 frozenAt = sA.frozenAt;
+        bool isActive = sA.isActive;
 
         assertEq(accumulatedScore, 0, "score should be zero at open");
         assertEq(entrySqrtPriceX96, Constants.SQRT_PRICE_1_1, "entry sqrtPrice mismatch");
@@ -145,25 +129,19 @@ contract HoldfastHookAddLiquidityTest is HoldfastHookBase {
         _addLiq(TICK_LOWER, TICK_UPPER, LIQ_DELTA, bytes32(0));
 
         bytes32 key = _streakKey(TICK_LOWER, TICK_UPPER, bytes32(0));
-        (,,, uint256 firstActiveBlockBefore, uint160 entryBefore,,,,,,) = _readStreak(key);
+        HoldfastHook.PositionStreak memory sB = _readStreak(key);
+        uint256 firstActiveBlockBefore = sB.firstActiveBlock;
+        uint160 entryBefore = sB.entrySqrtPriceX96;
 
         // Advance time and add more liquidity to the SAME position key.
         vm.roll(500);
         _addLiq(TICK_LOWER, TICK_UPPER, LIQ_DELTA, bytes32(0));
 
-        (
-            ,
-            uint256 lastUpdateBlock,
-            ,
-            uint256 firstActiveBlockAfter,
-            uint160 entryAfter,
-            ,
-            ,
-            ,
-            bool isActive,
-            ,
-            
-        ) = _readStreak(key);
+        HoldfastHook.PositionStreak memory sC = _readStreak(key);
+        uint256 lastUpdateBlock = sC.lastUpdateBlock;
+        uint256 firstActiveBlockAfter = sC.firstActiveBlock;
+        uint160 entryAfter = sC.entrySqrtPriceX96;
+        bool isActive = sC.isActive;
 
         assertEq(entryAfter, entryBefore, "entrySqrtPriceX96 must not change on top-up");
         assertEq(firstActiveBlockAfter, firstActiveBlockBefore, "firstActiveBlock must not change on top-up");
@@ -185,8 +163,8 @@ contract HoldfastHookAddLiquidityTest is HoldfastHookBase {
         bytes32 k1 = _streakKey(-60, 60, bytes32(0));
         bytes32 k2 = _streakKey(-120, 120, bytes32(0));
 
-        (,,, uint256 fab1,,,,,,,) = _readStreak(k1);
-        (,,, uint256 fab2,,,,,,,) = _readStreak(k2);
+        uint256 fab1 = _readStreak(k1).firstActiveBlock;
+        uint256 fab2 = _readStreak(k2).firstActiveBlock;
 
         assertEq(fab1, 100);
         assertEq(fab2, 200);
@@ -202,8 +180,8 @@ contract HoldfastHookAddLiquidityTest is HoldfastHookBase {
         bytes32 k1 = _streakKey(TICK_LOWER, TICK_UPPER, bytes32(uint256(1)));
         bytes32 k2 = _streakKey(TICK_LOWER, TICK_UPPER, bytes32(uint256(2)));
 
-        (,,, uint256 fab1,,,,,,,) = _readStreak(k1);
-        (,,, uint256 fab2,,,,,,,) = _readStreak(k2);
+        uint256 fab1 = _readStreak(k1).firstActiveBlock;
+        uint256 fab2 = _readStreak(k2).firstActiveBlock;
 
         assertEq(fab1, 100);
         assertEq(fab2, 200);

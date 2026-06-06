@@ -76,15 +76,15 @@ contract HoldfastHookAttackVectorsTest is HoldfastHookBase {
     }
 
     function _accumulatedScore(bytes32 key) internal view returns (uint256 score) {
-        (score,,,,,,,,,,) = harness.streaks(key);
+        score = harness.getStreak(key).accumulatedScore;
     }
 
     function _entrySqrtPriceX96(bytes32 key) internal view returns (uint160 entry) {
-        (,,,, entry,,,,,,) = harness.streaks(key);
+        entry = harness.getStreak(key).entrySqrtPriceX96;
     }
 
     function _isActive(bytes32 key) internal view returns (bool active) {
-        (,,,,,,,, active,,) = harness.streaks(key);
+        active = harness.getStreak(key).isActive;
     }
 
     /// @notice Same-block add + swap + remove must accrue zero score.

@@ -73,6 +73,9 @@ contract HoldfastHook is BaseHook, IHoldfastHook, ReentrancyGuard {
         bool isActive;
         int256 realizedIL;
         uint128 liquidity; // internally tracked from params.liquidityDelta; settle reads this, not PoolManager's msg.sender-keyed view
+        PoolId poolId;     // cached so claim() can self-settle without a PoolKey
+        int24 poolTickLower;
+        int24 poolTickUpper;
     }
 
     struct PoolVolatility {
@@ -82,7 +85,7 @@ contract HoldfastHook is BaseHook, IHoldfastHook, ReentrancyGuard {
         uint256 lastVolUpdate;
     }
 
-    mapping(bytes32 => PositionStreak) public streaks;
+    mapping(bytes32 => PositionStreak) internal streaks;
     mapping(PoolId => PoolVolatility) public volatility;
     mapping(PoolId => uint256) public globalScorePerLiquidity; // Curve gauge-style pool-level accumulator, incremented per swap
     mapping(PoolId => uint256) public lastGlobalScoreUpdateBlock;
@@ -255,6 +258,9 @@ contract HoldfastHook is BaseHook, IHoldfastHook, ReentrancyGuard {
             s.lastGlobalScoreSnapshot = globalScorePerLiquidity[key.toId()];
             s.isActive = true;
             s.liquidity += uint128(uint256(params.liquidityDelta));
+            s.poolId = key.toId();
+            s.poolTickLower = params.tickLower;
+            s.poolTickUpper = params.tickUpper;
 
             emit PositionOpened(
                 positionKey,
@@ -277,6 +283,9 @@ contract HoldfastHook is BaseHook, IHoldfastHook, ReentrancyGuard {
             s.lastGlobalScoreSnapshot = globalScorePerLiquidity[key.toId()];
             s.isActive = true;
             s.liquidity += uint128(uint256(params.liquidityDelta));
+            s.poolId = key.toId();
+            s.poolTickLower = params.tickLower;
+            s.poolTickUpper = params.tickUpper;
 
             emit PositionOpened(
                 positionKey,

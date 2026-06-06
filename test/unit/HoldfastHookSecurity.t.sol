@@ -62,11 +62,11 @@ contract HoldfastHookSecurityTest is HoldfastHookBase {
     }
 
     function _currentTier(bytes32 positionKey) internal view returns (uint8 tier) {
-        (,,,,, tier,,,,,) = harness.streaks(positionKey);
+        tier = harness.getStreak(positionKey).currentTier;
     }
 
     function _nftTokenId(bytes32 positionKey) internal view returns (uint256 tokenId) {
-        (,,,,,, tokenId,,,,) = harness.streaks(positionKey);
+        tokenId = harness.getStreak(positionKey).nftTokenId;
     }
 
     // -----------------------------------------------------------------

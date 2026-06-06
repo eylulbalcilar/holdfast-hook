@@ -178,7 +178,7 @@ contract HoldfastHookClaimFlowForkTest is Test {
 
         // 5. Assertions: LP received USDC, accumulatedScore zeroed, tier sum zeroed
         assertGt(lpUsdcAfter, lpUsdcBefore, "lp did not receive USDC");
-        (uint256 accScore,,,,,,,,,) = harness.streaks(positionKey);
+        uint256 accScore = harness.getStreak(positionKey).accumulatedScore;
         assertEq(accScore, 0, "accumulatedScore not zeroed");
         assertEq(harness.sumOfTierScores(TIER_BRONZE), 0, "Bronze sum not zeroed");
     }
@@ -223,7 +223,7 @@ contract HoldfastHookClaimFlowForkTest is Test {
         assertEq(nft.ownerOf(tokenId), lp2, "transfer did not complete");
 
         // lp2 should have nothing claimable yet (clean slate)
-        (uint256 accScore,,,,,,,,,) = harness.streaks(positionKey);
+        uint256 accScore = harness.getStreak(positionKey).accumulatedScore;
         assertEq(accScore, 0, "new owner inherited stale score");
     }
 

@@ -71,7 +71,10 @@ library ScoreAccumulator {
         for (uint256 i = 0; i < 9; i++) {
             uint256 diff = ratios[i] >= WAD ? ratios[i] - WAD : WAD - ratios[i];
             // Normalize each squared deviation (WAD^2) back to WAD scale.
-            sumSquaredDeviations += (diff * diff) / WAD;
+            // fullMulDiv uses a 512-bit intermediate so an extreme single-swap
+            // sqrtPrice jump cannot overflow before the result is downscaled and
+            // later capped at MAX_VOLATILITY_FACTOR.
+            sumSquaredDeviations += FixedPointMathLib.fullMulDiv(diff, diff, WAD);
         }
         uint256 variance = sumSquaredDeviations / 9;
 

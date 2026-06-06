@@ -69,4 +69,29 @@ contract VolatilityTest is Test {
         assertLt(vfSingle, vfSustained, "single outlier dampened vs sustained movement");
         assertEq(vfSingle, 254201338334014853);
     }
+
+    /// @dev Regression: an extreme single-swap sqrtPrice jump (price pushed toward
+    ///      the tick limit) produces a very large ratio. Squaring it must not
+    ///      overflow before the result is downscaled and capped at MAX_VF.
+    function test_vol_extremeJumpDoesNotOverflow() public pure {
+        uint160[10] memory obs = _flat();
+        // Replace one observation with a near-MAX_SQRT_PRICE value so the
+        // adjacent ratio is enormous.
+        obs[5] = uint160(1461446703485210103287273052203988822378723970341);
+        uint256 vf = ScoreAccumulator.calculateVolatilityFactor(obs);
+        assertEq(vf, MAX_VF);
+    }
+
+    /// @dev Same extreme but as a sustained run, exercising several large ratios.
+    function test_vol_extremeRunDoesNotOverflow() public pure {
+        uint160[10] memory obs;
+        uint256 x = uint256(SQRT1);
+        for (uint256 i = 0; i < 10; i++) {
+            obs[i] = uint160(x);
+            x = x * 1000;
+        }
+        uint256 vf = ScoreAccumulator.calculateVolatilityFactor(obs);
+        assertEq(vf, MAX_VF);
+    }
+
 }

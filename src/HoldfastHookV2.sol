@@ -16,6 +16,7 @@ import {IPositionManager} from "v4-periphery/interfaces/IPositionManager.sol";
 import {PositionInfo, PositionInfoLibrary} from "v4-periphery/libraries/PositionInfoLibrary.sol";
 
 import {IERC721} from "openzeppelin-contracts/contracts/token/ERC721/IERC721.sol";
+import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 
 import {ScoreAccumulator} from "./libraries/ScoreAccumulator.sol";
 import {HoldfastNFT} from "./HoldfastNFT.sol";
@@ -41,7 +42,7 @@ import {YieldRouter} from "./YieldRouter.sol";
 ///      STEP 2/3 SCAFFOLD: notification bodies are intentionally empty stubs
 ///      (signatures + guard only); lifecycle bodies return their selectors only.
 ///      Handler logic lands in Step 4+.
-contract HoldfastHookV2 is BaseHook, ISubscriber {
+contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
     using PositionInfoLibrary for PositionInfo;
@@ -128,6 +129,9 @@ contract HoldfastHookV2 is BaseHook, ISubscriber {
     /// @notice Thrown when a subscriber notification is called by anyone other than the
     ///         bound PositionManager.
     error NotPositionManager();
+
+    /// @notice Thrown when claim is called by anyone other than the cached position owner.
+    error NotPositionOwner();
 
     /// @notice Restricts the ISubscriber notification surface to the bound PositionManager.
     /// @dev Distinct from BaseHook's `onlyPoolManager` (which checks address(poolManager)).
@@ -282,17 +286,12 @@ contract HoldfastHookV2 is BaseHook, ISubscriber {
     {
         PositionStreak storage s = streaks[tokenId];
 
+        // 1+2) Settle accrued score with the OLD liquidity, BEFORE applying the change, so the
+        //      just-ended period is scored at the liquidity that earned it. The shared helper
+        //      also keeps sumOfTierScores in step for a tiered position. Never reverts.
+        _settleScore(tokenId);
+
         unchecked {
-            // 1) Settle accrued score with the OLD liquidity, BEFORE applying the change,
-            //    so the just-ended period is scored at the liquidity that earned it.
-            //    globalScorePerLiquidity is monotonic and snapshot <= global, so delta is
-            //    non-negative; unchecked still guards never-revert against any pathology.
-            uint256 delta = globalScorePerLiquidity[s.poolId] - s.lastGlobalScoreSnapshot;
-            s.accumulatedScore += uint256(s.liquidity) * delta;
-
-            // 2) Advance the lazy-update cursor to the current accumulator value.
-            s.lastGlobalScoreSnapshot = globalScorePerLiquidity[s.poolId];
-
             // 3) Apply the authoritative signed liquidity change. liquidityChange may be
             //    negative (partial or full remove). Compute in int256: widening the cached
             //    uint128 via int256(uint256(...)) is always value-preserving and the sum is
@@ -334,12 +333,8 @@ contract HoldfastHookV2 is BaseHook, ISubscriber {
         // Double-burn / burn-after-freeze guard: idempotent, no revert.
         if (!s.isActive) return;
 
-        unchecked {
-            // 1) Final score settle with the current cached liquidity (Step-5 lazy pattern).
-            uint256 delta = globalScorePerLiquidity[s.poolId] - s.lastGlobalScoreSnapshot;
-            s.accumulatedScore += uint256(s.liquidity) * delta;
-            s.lastGlobalScoreSnapshot = globalScorePerLiquidity[s.poolId];
-        }
+        // 1) Final score settle (shared helper; also keeps sumOfTierScores exact). Never reverts.
+        _settleScore(tokenId);
 
         // 2) Realized IL against the entry baseline. getSlot0 is a view staticcall (allowed);
         //    reuse the existing constant-product formula, do not reimplement it.
@@ -382,7 +377,38 @@ contract HoldfastHookV2 is BaseHook, ISubscriber {
     }
 
     // ---------------------------------------------------------------------
-    // Internal: tier evaluation (used by notifyModifyLiquidity)
+    // Claim (runs in the LP's own tx frame: external calls and reverts allowed)
+    // ---------------------------------------------------------------------
+
+    /// @notice Settle and recompute tier for a position ahead of payout. STEP 8a implements
+    ///         authorization, the final lazy settle, and tier accounting only; the Aave
+    ///         withdraw and USDC transfer are STEP 8b.
+    /// @dev Unlike the notify handlers, claim runs in the LP's own transaction frame (not
+    ///      bubbled up by PositionManager), so external calls and revert-on-bad-input are
+    ///      allowed and correct here. Authorization binds to the CACHED streak.owner, never
+    ///      posm.ownerOf: a transferred position arrives unsubscribed, and its new owner must
+    ///      re-subscribe to accrue, they cannot claim the prior owner's cached balance.
+    function claim(uint256 tokenId) external nonReentrant {
+        PositionStreak storage s = streaks[tokenId];
+
+        // Authorization: cached owner only. This is the one place a revert is correct.
+        if (msg.sender != s.owner) revert NotPositionOwner();
+
+        // Settle and re-evaluate tier only while the streak is active. A frozen/burned streak
+        // already had its final settle and tier accounting in notifyBurn (which also removed
+        // it from sumOfTierScores); re-running here would double-count the score and re-add a
+        // burned position to the tier sum, breaking the notifyBurn decrement invariant.
+        if (s.isActive) {
+            _settleScore(tokenId);
+            _evaluateAndMaybeMint(tokenId);
+        }
+
+        // STEP 8b: compute the tier-weighted and realized-IL shares, withdraw from Aave via
+        // the YieldRouter, and transfer USDC to the claimant.
+    }
+
+    // ---------------------------------------------------------------------
+    // Internal: score settle and tier evaluation (shared by notify handlers and claim)
     // ---------------------------------------------------------------------
 
     /// @dev Lazy tier transition under the dual criterion (score AND tenure). The
@@ -409,16 +435,55 @@ contract HoldfastHookV2 is BaseHook, ISubscriber {
             try nft.mint(s.owner, bytes32(tokenId)) returns (uint256 badgeId) {
                 s.nftTokenId = badgeId;
                 s.currentTier = TIER_BRONZE;
+                // Bucket maintenance: the position enters its first tier with its full score.
+                unchecked {
+                    sumOfTierScores[TIER_BRONZE] += s.accumulatedScore;
+                }
                 if (nextTier > TIER_BRONZE) {
                     try nft.upgradeTier(badgeId, nextTier) {
+                        _moveTierBucket(TIER_BRONZE, nextTier, s.accumulatedScore);
                         s.currentTier = nextTier;
                     } catch {}
                 }
             } catch {}
         } else {
             try nft.upgradeTier(s.nftTokenId, nextTier) {
+                _moveTierBucket(s.currentTier, nextTier, s.accumulatedScore);
                 s.currentTier = nextTier;
             } catch {}
+        }
+    }
+
+    /// @dev Move a position's full accumulatedScore from one tier bucket to another on
+    ///      upgrade. The source subtraction is clamped so it can never underflow (preserving
+    ///      the never-revert invariant when called from the notify path). Unchecked: pure
+    ///      storage arithmetic, no external call.
+    function _moveTierBucket(uint8 fromTier, uint8 toTier, uint256 score) private {
+        unchecked {
+            uint256 b = sumOfTierScores[fromTier];
+            sumOfTierScores[fromTier] = b >= score ? b - score : 0;
+            sumOfTierScores[toTier] += score;
+        }
+    }
+
+    /// @dev Lazy Curve-gauge settle: fold the pool accumulator delta into the position's
+    ///      score and, for an already-tiered position, into its tier bucket so
+    ///      sumOfTierScores stays exact for the notifyBurn decrement. Storage-only and fully
+    ///      unchecked: never reverts, so it is safe to call from the never-revert notify
+    ///      handlers as well as from the claim flow. This is the single place where an
+    ///      incremental score gain updates sumOfTierScores.
+    function _settleScore(uint256 tokenId) private {
+        PositionStreak storage s = streaks[tokenId];
+        unchecked {
+            uint256 delta = globalScorePerLiquidity[s.poolId] - s.lastGlobalScoreSnapshot;
+            if (delta != 0 && s.liquidity != 0) {
+                uint256 gained = uint256(s.liquidity) * delta;
+                s.accumulatedScore += gained;
+                if (s.currentTier != TIER_NONE) {
+                    sumOfTierScores[s.currentTier] += gained;
+                }
+            }
+            s.lastGlobalScoreSnapshot = globalScorePerLiquidity[s.poolId];
         }
     }
 

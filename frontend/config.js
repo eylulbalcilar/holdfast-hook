@@ -37,7 +37,7 @@ export const ADDRESSES = {
     stateView: "0x571291b572ed32ce6751a2Cb2486EbEe8DEfB9B4",
     usdc: "0xba50Cd2A20f6DA35D788639E581bca8d0B5d4D5f",
     aUSDC: "0x10F1A9D11CDf50041f3f8cB7191CBE2f31750ACC",
-    poolId: "0x10ad9a3049c38eca566db11f305f4663ff7b68a2022a860e97e99d69dddebe9f",
+    poolId: "0xc4e68581dc1f1f1e862511df72f12eeadce96dde6b099cc7aea8f116770979ed",
   },
 };
 

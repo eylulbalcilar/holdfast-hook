@@ -34,3 +34,4 @@ frontend/deployments/*
 # Deploy and seed logs
 *-log.txt
 deploy-log.txt
+apply_*.py

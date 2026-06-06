@@ -72,6 +72,7 @@ contract HoldfastHook is BaseHook, IHoldfastHook, ReentrancyGuard {
         uint128 frozenAt;
         bool isActive;
         int256 realizedIL;
+        uint128 liquidity; // internally tracked from params.liquidityDelta; settle reads this, not PoolManager's msg.sender-keyed view
     }
 
     struct PoolVolatility {
@@ -253,6 +254,7 @@ contract HoldfastHook is BaseHook, IHoldfastHook, ReentrancyGuard {
             s.lastUpdateBlock = block.number;
             s.lastGlobalScoreSnapshot = globalScorePerLiquidity[key.toId()];
             s.isActive = true;
+            s.liquidity += uint128(uint256(params.liquidityDelta));
 
             emit PositionOpened(
                 positionKey,
@@ -274,6 +276,7 @@ contract HoldfastHook is BaseHook, IHoldfastHook, ReentrancyGuard {
             s.frozenAt = 0;
             s.lastGlobalScoreSnapshot = globalScorePerLiquidity[key.toId()];
             s.isActive = true;
+            s.liquidity += uint128(uint256(params.liquidityDelta));
 
             emit PositionOpened(
                 positionKey,
@@ -290,6 +293,7 @@ contract HoldfastHook is BaseHook, IHoldfastHook, ReentrancyGuard {
             // lazy-update cursor so the next score accrual integrates from now.
             s.lastGlobalScoreSnapshot = globalScorePerLiquidity[key.toId()];
             s.lastUpdateBlock = block.number;
+            s.liquidity += uint128(uint256(params.liquidityDelta));
         }
 
         return (this.afterAddLiquidity.selector, BalanceDelta.wrap(0));
@@ -319,9 +323,8 @@ contract HoldfastHook is BaseHook, IHoldfastHook, ReentrancyGuard {
         // Settle accrued score with the still-current liquidity before any removal,
         // then advance the snapshot (Curve-gauge lazy update).
         {
-            uint128 liq = poolManager.getPositionLiquidity(key.toId(), positionKey);
             uint256 narrowness = ScoreAccumulator.calculateRangeNarrowness(params.tickLower, params.tickUpper);
-            _settlePositionScore(positionKey, key.toId(), liq, narrowness);
+            _settlePositionScore(positionKey, key.toId(), s.liquidity, narrowness);
         }
 
         // Lazy tier evaluation: claim time may cross a tier threshold for an LP
@@ -348,8 +351,12 @@ contract HoldfastHook is BaseHook, IHoldfastHook, ReentrancyGuard {
             return (this.afterRemoveLiquidity.selector, BalanceDelta.wrap(0));
         }
 
-        // Authoritative residual liquidity read from PoolManager.
-        uint128 remaining = poolManager.getPositionLiquidity(key.toId(), positionKey);
+        // Decrement internal tracked liquidity (clamped) and use it for closure
+        // detection. PoolManager's view is keyed by msg.sender (the router), not by
+        // the hookData owner, so it cannot be relied on here.
+        uint128 removed = uint128(uint256(-params.liquidityDelta));
+        s.liquidity = removed >= s.liquidity ? 0 : s.liquidity - removed;
+        uint128 remaining = s.liquidity;
 
         if (remaining == 0) {
             // Full closure: freeze the streak. Tier persists (no downgrade) and

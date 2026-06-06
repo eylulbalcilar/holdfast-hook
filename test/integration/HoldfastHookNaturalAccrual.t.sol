@@ -83,7 +83,7 @@ contract HoldfastHookNaturalAccrualTest is HoldfastHookBase {
     function _score(bytes32 key) internal view returns (uint256 s) {
         // Positional read against the current PositionStreak tuple. When the
         // liquidity field is appended to the struct, extend this by one trailing slot.
-        (s,,,,,,,,,) = harness.streaks(key);
+        (s,,,,,,,,,,) = harness.streaks(key);
     }
 
     /// @dev RED baseline. Score must accrue for an LP whose address is asserted in

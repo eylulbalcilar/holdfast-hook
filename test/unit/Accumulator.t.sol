@@ -51,7 +51,7 @@ contract AccumulatorTest is HoldfastHookBase {
     }
 
     function _score(bytes32 key) internal view returns (uint256 s) {
-        (s,,,,,,,,,) = harness.streaks(key);
+        (s,,,,,,,,,,) = harness.streaks(key);
     }
 
     function _churn() internal {

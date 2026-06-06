@@ -125,7 +125,7 @@ Rejected alternative: setting a dynamic fee via `LPFeeLibrary` in `beforeSwap`. 
 The 10-observation ring buffer is consumed in `ScoreAccumulator.calculateVolatilityFactor` (pure):
 
 1. Compute 9 consecutive ratios `ratio_i = sqrtPrice[i+1] / sqrtPrice[i]` in WAD scale.
-2. For each ratio compute its deviation from `WAD` (the no-change point, ratio = 1.0), square it, and normalize back to WAD scale by dividing by `WAD`. Average the 9 normalized squared deviations.
+2. For each ratio compute its deviation from `WAD` (the no-change point, ratio = 1.0), square it via `FixedPointMathLib.fullMulDiv(diff, diff, WAD)`, and average the 9 normalized squared deviations. `fullMulDiv` uses a 512-bit intermediate product, so an extreme single-swap sqrtPrice jump toward the tick limit cannot overflow before the value is downscaled and later capped at `MAX_VOLATILITY_FACTOR`.
 3. Multiply by 4 to convert sqrtPrice deviation to price deviation (`d(p)/p approx 2 * d(sqrtP)/sqrtP`).
 4. Multiply by `SCALE_FACTOR` (calibration constant); the value is already WAD-scaled.
 5. Cap at `2 * WAD` (200%).

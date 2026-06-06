@@ -13,7 +13,7 @@ export const NETWORKS = {
   sepolia: {
     chainId: 84532,
     name: "Base Sepolia",
-    rpcUrl: "https://base-sepolia-rpc.publicnode.com",
+    rpcUrl: "https://sepolia.base.org",
     blockExplorer: "https://sepolia.basescan.org",
   },
 };

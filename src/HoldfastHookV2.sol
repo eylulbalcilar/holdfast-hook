@@ -17,6 +17,7 @@ import {PositionInfo, PositionInfoLibrary} from "v4-periphery/libraries/Position
 
 import {IERC721} from "openzeppelin-contracts/contracts/token/ERC721/IERC721.sol";
 
+import {ScoreAccumulator} from "./libraries/ScoreAccumulator.sol";
 import {HoldfastNFT} from "./HoldfastNFT.sol";
 import {YieldRouter} from "./YieldRouter.sol";
 
@@ -101,6 +102,15 @@ contract HoldfastHookV2 is BaseHook, ISubscriber {
     /// @dev WAD-scaled accrued score parked for later conversion and payout via the claim/
     ///      withdraw path. Writing here is a storage write only, no external call.
     mapping(address => uint256) public pendingClaim;
+
+    /// @notice Sum of accumulatedScore across active positions in a given tier (WAD scale).
+    /// @dev Decremented (clamped) on burn; the increment side lands with the swap-path
+    ///      score accrual in a later step.
+    mapping(uint8 => uint256) public sumOfTierScores;
+
+    /// @notice Sum of |realizedIL| across closed positions, denominator for the realized-IL
+    ///         claim arm.
+    uint256 public sumOfAbsoluteIL;
 
     /// @notice The canonical Uniswap v4 PositionManager this hook subscribes to.
     /// @dev Sole authorized caller of the ISubscriber notification surface (onlyByPosm).
@@ -307,14 +317,57 @@ contract HoldfastHookV2 is BaseHook, ISubscriber {
     }
 
     /// @inheritdoc ISubscriber
+    /// @notice Final score settle, realized-IL snapshot, and streak freeze on position burn.
+    /// @dev MUST NEVER REVERT (bubbles up in the LP's burn tx). Arithmetic is unchecked or
+    ///      structurally guarded, the tier-sum subtraction is clamped, and the only
+    ///      non-storage interaction is getSlot0 (a view staticcall). No Aave, no require,
+    ///      no loops. Idempotent: a burn on an already-frozen streak returns early.
     function notifyBurn(
         uint256 tokenId,
-        address owner,
-        PositionInfo info,
-        uint256 liquidity,
-        BalanceDelta feesAccrued
+        address, // owner (unused; cached streak.owner is authoritative)
+        PositionInfo, // info (unused; cached poolId/ticks)
+        uint256, // liquidity (unused)
+        BalanceDelta // feesAccrued (unused)
     ) external onlyByPosm {
-        // Step 4: finalize realized IL, freeze streak. Must never revert.
+        PositionStreak storage s = streaks[tokenId];
+
+        // Double-burn / burn-after-freeze guard: idempotent, no revert.
+        if (!s.isActive) return;
+
+        unchecked {
+            // 1) Final score settle with the current cached liquidity (Step-5 lazy pattern).
+            uint256 delta = globalScorePerLiquidity[s.poolId] - s.lastGlobalScoreSnapshot;
+            s.accumulatedScore += uint256(s.liquidity) * delta;
+            s.lastGlobalScoreSnapshot = globalScorePerLiquidity[s.poolId];
+        }
+
+        // 2) Realized IL against the entry baseline. getSlot0 is a view staticcall (allowed);
+        //    reuse the existing constant-product formula, do not reimplement it.
+        (uint160 currentSqrtPriceX96,,,) = poolManager.getSlot0(s.poolId);
+        int256 il = ScoreAccumulator.calculateRealizedIL(s.entrySqrtPriceX96, currentSqrtPriceX96);
+        s.realizedIL = il;
+
+        // 3) Freeze the streak.
+        s.isActive = false;
+        // forge-lint: disable-next-line(unsafe-typecast)
+        s.frozenAt = uint128(block.number);
+
+        // 4) Tier accounting. Clamped subtraction so a position that never reached a tier
+        //    (currentTier == NONE) or whose score was never added to the bucket cannot
+        //    underflow. abs(IL) (the formula returns a non-positive value, so il < 0 means a
+        //    real loss) feeds the realized-IL claim arm.
+        if (s.currentTier != TIER_NONE) {
+            uint256 bucket = sumOfTierScores[s.currentTier];
+            uint256 score = s.accumulatedScore;
+            sumOfTierScores[s.currentTier] = bucket >= score ? bucket - score : 0;
+        }
+        if (il < 0) {
+            unchecked {
+                // Safe: il < 0 here, so -il is positive and the uint256 cast is exact.
+                // forge-lint: disable-next-line(unsafe-typecast)
+                sumOfAbsoluteIL += uint256(-il);
+            }
+        }
     }
 
     /// @inheritdoc ISubscriber

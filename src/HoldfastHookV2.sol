@@ -290,9 +290,16 @@ contract HoldfastHookV2 is BaseHook, ISubscriber {
             //    direct int256->uint128 cast is disallowed, so narrow through uint256; the
             //    uint128 truncation never reverts.
             int256 newLiquidity = int256(uint256(s.liquidity)) + liquidityChange;
-            // Intentional truncation: the never-revert invariant forbids a checked cast.
-            // forge-lint: disable-next-line(unsafe-typecast)
-            s.liquidity = uint128(uint256(newLiquidity));
+            // Defensive clamp: if cached liquidity and the authoritative delta ever diverge
+            // so that newLiquidity is negative, clamp to 0 rather than wrapping a negative
+            // value into a huge uint128. Pure branch, no revert (no require, no error).
+            if (newLiquidity < 0) {
+                s.liquidity = 0;
+            } else {
+                // Intentional truncation: the never-revert invariant forbids a checked cast.
+                // forge-lint: disable-next-line(unsafe-typecast)
+                s.liquidity = uint128(uint256(newLiquidity));
+            }
         }
 
         // 4) Lazy tier evaluation; badge mint/upgrade is revert-safe (try/catch).

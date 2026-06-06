@@ -371,8 +371,14 @@ contract HoldfastHookV2 is BaseHook, ISubscriber {
     }
 
     /// @inheritdoc ISubscriber
+    /// @notice Best-effort frozen flag on unsubscribe. PositionManager gas-caps this call
+    ///         and swallows its result in a try/catch, so correctness MUST NOT depend on it
+    ///         executing. The authoritative reconciliation is notifySubscribe, which
+    ///         finalizes any prior owner's accrued score into pendingClaim on re-subscribe.
+    /// @dev Absolute minimum: a single storage write. No isActive change, no settle, no tier
+    ///      accounting, no IL, no external call, no require, no loop.
     function notifyUnsubscribe(uint256 tokenId) external onlyByPosm {
-        // Step 4: best-effort frozen flag only. Gas-capped; correctness must not depend on it.
+        streaks[tokenId].isFrozen = true;
     }
 
     // ---------------------------------------------------------------------

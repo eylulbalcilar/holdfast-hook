@@ -5,14 +5,17 @@ import {BaseHook} from "v4-periphery/utils/BaseHook.sol";
 import {Hooks} from "v4-core/libraries/Hooks.sol";
 import {IPoolManager} from "v4-core/interfaces/IPoolManager.sol";
 import {PoolKey} from "v4-core/types/PoolKey.sol";
-import {PoolId} from "v4-core/types/PoolId.sol";
+import {PoolId, PoolIdLibrary} from "v4-core/types/PoolId.sol";
 import {BalanceDelta} from "v4-core/types/BalanceDelta.sol";
 import {BeforeSwapDelta, BeforeSwapDeltaLibrary} from "v4-core/types/BeforeSwapDelta.sol";
 import {SwapParams} from "v4-core/types/PoolOperation.sol";
+import {StateLibrary} from "v4-core/libraries/StateLibrary.sol";
 
 import {ISubscriber} from "v4-periphery/interfaces/ISubscriber.sol";
 import {IPositionManager} from "v4-periphery/interfaces/IPositionManager.sol";
-import {PositionInfo} from "v4-periphery/libraries/PositionInfoLibrary.sol";
+import {PositionInfo, PositionInfoLibrary} from "v4-periphery/libraries/PositionInfoLibrary.sol";
+
+import {IERC721} from "openzeppelin-contracts/contracts/token/ERC721/IERC721.sol";
 
 import {HoldfastNFT} from "./HoldfastNFT.sol";
 import {YieldRouter} from "./YieldRouter.sol";
@@ -38,6 +41,10 @@ import {YieldRouter} from "./YieldRouter.sol";
 ///      (signatures + guard only); lifecycle bodies return their selectors only.
 ///      Handler logic lands in Step 4+.
 contract HoldfastHookV2 is BaseHook, ISubscriber {
+    using PoolIdLibrary for PoolKey;
+    using StateLibrary for IPoolManager;
+    using PositionInfoLibrary for PositionInfo;
+
     /// @notice Per-position streak state, keyed by the canonical PositionManager tokenId.
     /// @dev `owner` is cached from IPositionManager.ownerOf at notifySubscribe and is the
     ///      claim-authorization source in V2 (not a live ownerOf read, not NFT.ownerOf).
@@ -72,6 +79,15 @@ contract HoldfastHookV2 is BaseHook, ISubscriber {
     function getStreak(uint256 tokenId) external view returns (PositionStreak memory) {
         return streaks[tokenId];
     }
+
+    /// @notice Curve gauge-style pool-level score accumulator, incremented per swap (Step 5+).
+    /// @dev Read here as the lazy-update snapshot cursor; written by the swap path later.
+    mapping(PoolId => uint256) public globalScorePerLiquidity;
+
+    /// @notice Reward finalized to an owner whose position was re-subscribed under a new owner.
+    /// @dev WAD-scaled accrued score parked for later conversion and payout via the claim/
+    ///      withdraw path. Writing here is a storage write only, no external call.
+    mapping(address => uint256) public pendingClaim;
 
     /// @notice The canonical Uniswap v4 PositionManager this hook subscribes to.
     /// @dev Sole authorized caller of the ISubscriber notification surface (onlyByPosm).
@@ -170,9 +186,64 @@ contract HoldfastHookV2 is BaseHook, ISubscriber {
     // ---------------------------------------------------------------------
 
     /// @inheritdoc ISubscriber
-    function notifySubscribe(uint256 tokenId, bytes memory data) external onlyByPosm {
-        // Step 4: cache owner (IPositionManager.ownerOf), baseline liquidity
-        // (getPositionLiquidity), range/pool (getPoolAndPositionInfo), IL baseline.
+    /// @notice Authoritative reconciliation point for identity. Not gas-capped, kept minimal.
+    /// @dev Reads identity and position state from the canonical PositionManager, then either
+    ///      cold-inits a fresh streak or, on a re-subscribe under a DIFFERENT owner, finalizes
+    ///      the prior owner's accrued score into pendingClaim BEFORE resetting for the new
+    ///      owner (order is load-bearing: resetting first would discard the old score).
+    ///      No external state-changing calls (no Aave); pendingClaim is a pure storage write.
+    ///      No loops. Bounded work.
+    function notifySubscribe(uint256 tokenId, bytes memory /*data*/) external onlyByPosm {
+        // Authoritative identity and position state from the canonical PositionManager.
+        address owner = IERC721(address(positionManager)).ownerOf(tokenId);
+        (PoolKey memory poolKey, PositionInfo info) = positionManager.getPoolAndPositionInfo(tokenId);
+        PoolId pid = poolKey.toId();
+        int24 tl = info.tickLower();
+        int24 tu = info.tickUpper();
+        uint128 liq = positionManager.getPositionLiquidity(tokenId);
+
+        // getPoolAndPositionInfo yields the range/pool but not the live price; read slot0
+        // from PoolManager directly for the realized-IL entry baseline.
+        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(pid);
+
+        PositionStreak storage s = streaks[tokenId];
+
+        if (s.isActive && s.owner != owner) {
+            // Re-subscribe under a NEW owner. Finalize the prior owner's accrued score
+            // into pendingClaim FIRST, so it is never lost, then reset for the new owner.
+            pendingClaim[s.owner] += s.accumulatedScore;
+
+            s.owner = owner;
+            s.accumulatedScore = 0;
+            s.liquidity = liq;
+            s.lastGlobalScoreSnapshot = globalScorePerLiquidity[pid];
+            s.firstActiveBlock = block.number;
+            s.entrySqrtPriceX96 = sqrtPriceX96;
+            s.poolId = pid;
+            s.tickLower = tl;
+            s.tickUpper = tu;
+            s.frozenAt = 0;
+            s.isFrozen = false;
+            s.isActive = true;
+            return;
+        }
+
+        if (!s.isActive) {
+            // Cold init: first subscription for this tokenId.
+            s.owner = owner;
+            s.liquidity = liq;
+            s.lastGlobalScoreSnapshot = globalScorePerLiquidity[pid];
+            s.firstActiveBlock = block.number;
+            s.entrySqrtPriceX96 = sqrtPriceX96;
+            s.poolId = pid;
+            s.tickLower = tl;
+            s.tickUpper = tu;
+            s.isActive = true;
+            return;
+        }
+
+        // s.isActive && s.owner == owner: same-owner re-subscribe. Not specified for Step 4;
+        // leave the streak intact (no reset, no data loss).
     }
 
     /// @inheritdoc ISubscriber

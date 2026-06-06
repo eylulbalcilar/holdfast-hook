@@ -69,15 +69,21 @@ contract DemoSeed is Script, StdCheats {
         IERC20(_weth).approve(address(_swapRouter),   type(uint256).max);
 
         _buildPoolKey(hookAddr);
-        _initPool();
-        _addLiquidity(liqDelta);
+        // SEED_MODE: "full" (default) does init + liquidity + swaps;
+        // "swaps" skips init and liquidity for an already-seeded pool.
+        bool swapsOnly = (keccak256(bytes(vm.envOr("SEED_MODE", string("full")))) == keccak256(bytes("swaps")));
+        if (!swapsOnly) {
+            _initPool();
+            _addLiquidity(liqDelta);
+        }
         _runSwaps(nSwaps, swapAmt);
 
         if (isAnvil) {
             vm.roll(block.number + BRONZE_BLOCKS + 10);
             console2.log("Blocks advanced to:", block.number);
         } else {
-            console2.log("Testnet: wait", BRONZE_BLOCKS - (block.number), "more blocks for Bronze");
+            console2.log("Testnet seed block:", block.number);
+            console2.log("Wait BRONZE_BLOCKS more blocks from here for Bronze:", BRONZE_BLOCKS);
         }
 
         vm.stopBroadcast();
@@ -143,7 +149,7 @@ contract DemoSeed is Script, StdCheats {
     function _runSwaps(uint256 n, uint256 swapAmt) internal {
         bytes memory hookData = abi.encode(_deployer);
         for (uint256 i = 0; i < n; i++) {
-            bool zeroForOne = (i % 2 == 0);
+            bool zeroForOne = true;
             _swapRouter.swap(
                 _key,
                 SwapParams({

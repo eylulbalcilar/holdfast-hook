@@ -86,6 +86,13 @@ contract HoldfastHook is BaseHook, IHoldfastHook, ReentrancyGuard {
     }
 
     mapping(bytes32 => PositionStreak) internal streaks;
+
+    /// @notice Read a position's full streak state. External read path for the
+    ///         frontend and tooling (the streaks mapping is internal so the
+    ///         auto-generated tuple getter, which overflows the stack, is avoided).
+    function getStreak(bytes32 positionKey) external view returns (PositionStreak memory) {
+        return streaks[positionKey];
+    }
     mapping(PoolId => PoolVolatility) public volatility;
     mapping(PoolId => uint256) public globalScorePerLiquidity; // Curve gauge-style pool-level accumulator, incremented per swap
     mapping(PoolId => uint256) public lastGlobalScoreUpdateBlock;

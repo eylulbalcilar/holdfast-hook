@@ -315,14 +315,14 @@ async function renderPositions(userAddress) {
       address: deployment.holdfastNFT, abi: abis.nft, functionName: "tokenIdToTier", args: [tokenId],
     });
     const streak = await publicClient.readContract({
-      address: deployment.holdfastHook, abi: abis.hook, functionName: "streaks", args: [positionKey],
+      address: deployment.holdfastHook, abi: abis.hook, functionName: "getStreak", args: [positionKey],
     });
 
-    const accumulatedScore = streak[0] ?? streak.accumulatedScore ?? 0n;
-    const firstActiveBlock = streak[2] ?? streak.firstActiveBlock ?? 0n;
-    const entrySqrtPrice = streak[3] ?? streak.entrySqrtPriceX96 ?? 0n;
-    const isActive = streak[7] ?? streak.isActive ?? false;
-    const realizedIL = streak[8] ?? streak.realizedIL ?? 0n;
+    const accumulatedScore = streak.accumulatedScore ?? streak[0] ?? 0n;
+    const firstActiveBlock = streak.firstActiveBlock ?? streak[3] ?? 0n;
+    const entrySqrtPrice = streak.entrySqrtPriceX96 ?? streak[4] ?? 0n;
+    const isActive = streak.isActive ?? streak[8] ?? false;
+    const realizedIL = streak.realizedIL ?? streak[9] ?? 0n;
 
     const currentBlock = await publicClient.getBlockNumber();
     const blocksActive = firstActiveBlock > 0n ? currentBlock - firstActiveBlock : 0n;

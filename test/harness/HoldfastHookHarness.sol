@@ -15,10 +15,6 @@ import {PoolId} from "v4-core/types/PoolId.sol";
 contract HoldfastHookHarness is HoldfastHook {
     constructor(IPoolManager _poolManager, HoldfastNFT _nft, YieldRouter _yieldRouter, address _usdc) HoldfastHook(_poolManager, _nft, _yieldRouter, _usdc) {}
 
-    function getStreak(bytes32 key) external view returns (HoldfastHook.PositionStreak memory) {
-        return streaks[key];
-    }
-
     function exposed_positionKey(address owner, int24 tickLower, int24 tickUpper, bytes32 salt)
         external
         pure

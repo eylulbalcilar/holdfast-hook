@@ -475,6 +475,7 @@ Holdfast is designed for a specific pool segment. It is not suitable for:
 - **Low-volatility pools** (< 20% annualized): the volatility multiplier remains near 1.0x, and fee redistribution provides minimal LP benefit (the baseline calibration scenario in Net LP Returns confirms this); stablecoin pools (USDC/USDT etc.) fall into this category
 - **Range-bound pairs:** sideways markets produce low scores, making tier qualification difficult or impossible
 - **Non-USDC pools:** the bonus pool is held as USDC and supplied to Aave V3's USDC reserve. The pool must contain USDC as one of its two tokens (`currency0` or `currency1`); the hook reads the USDC side of the `BalanceDelta` in `afterSwap` to capture the redistribution. Multi-token-to-USDC swap paths inside the hook are out of scope.
+- **Position manager integration:** score settlement reads position liquidity via `getPositionLiquidity` keyed by the `hookData`-resolved owner, which assumes the liquidity caller and the resolved owner share a position key. Test routers such as `PoolModifyLiquidityTest` register themselves as the position owner in PoolManager while the hook resolves the owner from `hookData`, so the two keys diverge and score does not accrue for router-mediated positions. A production deployment requires a position manager that propagates the LP owner to PoolManager so the keys align, or a caller-aligned key derivation. The scoring and claim mechanics themselves are verified in the fork test suite.
 
 Recommended deployment criteria:
 

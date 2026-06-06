@@ -30,3 +30,7 @@ lcov.info
 coverage/
 frontend/deployments/*
 !frontend/deployments/.gitkeep
+
+# Deploy and seed logs
+*-log.txt
+deploy-log.txt

@@ -20,10 +20,10 @@ contract DemoSeed is Script, StdCheats {
     using PoolIdLibrary for PoolKey;
 
     int24  internal constant TICK_SPACING   = 60;
-    int24  internal constant TICK_LOWER     = -600;
-    int24  internal constant TICK_UPPER     =  600;
+    int24  internal constant TICK_LOWER     = -196860;
+    int24  internal constant TICK_UPPER     = -195660;
     uint24 internal constant FEE            = 3000;
-    uint160 internal constant SQRT_PRICE_X96 = 1771595571142957166518320255467520;
+    uint160 internal constant SQRT_PRICE_X96 = 4339505179874779662909440;
     uint256 internal constant BRONZE_BLOCKS  = 1_000;
 
     // State shared across helpers (avoids stack depth in run())
@@ -43,6 +43,8 @@ contract DemoSeed is Script, StdCheats {
         uint256 nSwaps   = vm.envOr("N_SWAPS", uint256(12));
         uint256 lpUsdc   = vm.envOr("LP_USDC", uint256(1_000e6));
         uint256 lpWeth   = vm.envOr("LP_WETH", uint256(5e17));
+        uint256 liqDelta = vm.envOr("LIQ_DELTA", uint256(50_000e18));
+        uint256 swapAmt  = vm.envOr("SWAP_AMT", uint256(10e6));
         bool    isAnvil  = (block.chainid == 31337);
 
         _loadAddresses();
@@ -68,8 +70,8 @@ contract DemoSeed is Script, StdCheats {
 
         _buildPoolKey(hookAddr);
         _initPool();
-        _addLiquidity(lpUsdc);
-        _runSwaps(nSwaps);
+        _addLiquidity(liqDelta);
+        _runSwaps(nSwaps, swapAmt);
 
         if (isAnvil) {
             vm.roll(block.number + BRONZE_BLOCKS + 10);
@@ -123,14 +125,14 @@ contract DemoSeed is Script, StdCheats {
         console2.log("Pool initialized");
     }
 
-    function _addLiquidity(uint256) internal {
+    function _addLiquidity(uint256 liqDelta) internal {
         bytes memory hookData = abi.encode(_deployer);
         _modifyRouter.modifyLiquidity(
             _key,
             ModifyLiquidityParams({
                 tickLower: TICK_LOWER,
                 tickUpper: TICK_UPPER,
-                liquidityDelta: 1_000_000e18,
+                liquidityDelta: int256(liqDelta),
                 salt: bytes32(0)
             }),
             hookData
@@ -138,7 +140,7 @@ contract DemoSeed is Script, StdCheats {
         console2.log("Liquidity added");
     }
 
-    function _runSwaps(uint256 n) internal {
+    function _runSwaps(uint256 n, uint256 swapAmt) internal {
         bytes memory hookData = abi.encode(_deployer);
         for (uint256 i = 0; i < n; i++) {
             bool zeroForOne = (i % 2 == 0);
@@ -146,7 +148,7 @@ contract DemoSeed is Script, StdCheats {
                 _key,
                 SwapParams({
                     zeroForOne: zeroForOne,
-                    amountSpecified: -int256(100e6),
+                    amountSpecified: -int256(swapAmt),
                     sqrtPriceLimitX96: zeroForOne
                         ? TickMath.MIN_SQRT_PRICE + 1
                         : TickMath.MAX_SQRT_PRICE - 1

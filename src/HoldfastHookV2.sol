@@ -15,6 +15,7 @@ import {ISubscriber} from "v4-periphery/interfaces/ISubscriber.sol";
 import {IPositionManager} from "v4-periphery/interfaces/IPositionManager.sol";
 import {PositionInfo, PositionInfoLibrary} from "v4-periphery/libraries/PositionInfoLibrary.sol";
 
+import {IERC20} from "openzeppelin-contracts/contracts/token/ERC20/IERC20.sol";
 import {IERC721} from "openzeppelin-contracts/contracts/token/ERC721/IERC721.sol";
 import {ReentrancyGuard} from "openzeppelin-contracts/contracts/utils/ReentrancyGuard.sol";
 
@@ -59,6 +60,19 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
     uint256 internal constant BRONZE_BLOCKS = 1_000;
     uint256 internal constant SILVER_BLOCKS = 10_000;
     uint256 internal constant GOLD_BLOCKS = 100_000;
+
+    // Bonus pool split: tier-weighted arm 70%, realized-IL arm 30%.
+    uint256 internal constant TIER_ARM_BPS = 7000;
+    uint256 internal constant IL_ARM_BPS = 3000;
+    uint256 internal constant BPS_DENOM = 10_000;
+
+    // Tier-weighted arm allocation (DESIGN.md): Gold 40%, Silver 35%, Bronze 25%.
+    uint256 internal constant BRONZE_ALLOC_BPS = 2500;
+    uint256 internal constant SILVER_ALLOC_BPS = 3500;
+    uint256 internal constant GOLD_ALLOC_BPS = 4000;
+
+    // WAD-internal bonus-pool accounting; USDC is 6 decimals, WAD is 18.
+    uint256 internal constant USDC_TO_WAD = 1e12; // WAD / 1e6, scales a USDC amount up to WAD
 
     /// @notice Per-position streak state, keyed by the canonical PositionManager tokenId.
     /// @dev `owner` is cached from IPositionManager.ownerOf at notifySubscribe and is the
@@ -132,6 +146,16 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
 
     /// @notice Thrown when claim is called by anyone other than the cached position owner.
     error NotPositionOwner();
+
+    /// @notice Emitted on every claim. Share amounts are WAD-internal; totals are USDC-native.
+    event Claimed(
+        uint256 indexed tokenId,
+        address indexed claimer,
+        uint256 tierShareWad,
+        uint256 ilShareWad,
+        uint256 totalUsdc,
+        uint256 actualPaidUsdc
+    );
 
     /// @notice Restricts the ISubscriber notification surface to the bound PositionManager.
     /// @dev Distinct from BaseHook's `onlyPoolManager` (which checks address(poolManager)).
@@ -403,8 +427,82 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
             _evaluateAndMaybeMint(tokenId);
         }
 
-        // STEP 8b: compute the tier-weighted and realized-IL shares, withdraw from Aave via
-        // the YieldRouter, and transfer USDC to the claimant.
+        // ---- STEP 8b: payout ----
+
+        // Bonus pool is the router's real aUSDC balance (Aave supply + accrued yield),
+        // USDC-native. Express it in WAD for the internal share math; the single conversion
+        // back to USDC-native happens once, at the transfer boundary below.
+        uint256 bonusPoolUsdc = IERC20(yieldRouter.aUsdc()).balanceOf(address(yieldRouter));
+        uint256 bonusPoolWad = bonusPoolUsdc * USDC_TO_WAD;
+
+        // 1) Tier-weighted arm (70%): tierAlloc * (userScore / freshSumOfTierScores[tier]).
+        //    Division guarded: a zero denominator or zero user score yields a zero share.
+        uint256 tierShareWad = 0;
+        uint8 tier = s.currentTier;
+        if (tier != TIER_NONE) {
+            uint256 tierDenom = sumOfTierScores[tier];
+            uint256 userScore = s.accumulatedScore;
+            if (tierDenom != 0 && userScore != 0) {
+                uint256 tierAllocBps =
+                    tier == TIER_GOLD ? GOLD_ALLOC_BPS : (tier == TIER_SILVER ? SILVER_ALLOC_BPS : BRONZE_ALLOC_BPS);
+                tierShareWad = (bonusPoolWad * TIER_ARM_BPS * tierAllocBps * userScore)
+                    / (BPS_DENOM * BPS_DENOM * tierDenom);
+            }
+        }
+
+        // 2) Realized-IL arm (30%): ilArm * (|userIL| / sumOfAbsoluteIL). Only positions with a
+        //    realized loss participate; division guarded against a zero denominator.
+        uint256 ilShareWad = 0;
+        if (s.realizedIL < 0 && sumOfAbsoluteIL != 0) {
+            uint256 absIl = uint256(-s.realizedIL);
+            ilShareWad = (bonusPoolWad * IL_ARM_BPS * absIl) / (BPS_DENOM * sumOfAbsoluteIL);
+        }
+
+        // 3) Sum the WAD shares and convert to USDC-native exactly ONCE, at this boundary.
+        //    Integer division truncates toward zero, rounding down in the protocol's favor.
+        uint256 totalWad = tierShareWad + ilShareWad;
+        uint256 totalUsdc = totalWad * 1e6 / 1e18;
+
+        // Nothing payable (empty pool or sub-USDC dust): do not consume the position's score or
+        // call the router (which reverts on a zero-amount withdraw). The score is preserved for
+        // a later claim once the pool grows.
+        if (totalUsdc == 0) {
+            emit Claimed(tokenId, msg.sender, tierShareWad, ilShareWad, 0, 0);
+            return;
+        }
+
+        // 4) EFFECTS BEFORE INTERACTIONS: remove this position's contribution from the
+        //    denominators and zero its claimable state, so a repeat/re-entrant claim finds
+        //    nothing left. Clamped subtractions never underflow. nonReentrant is the backstop.
+        if (tierShareWad > 0) {
+            uint256 bucket = sumOfTierScores[tier];
+            uint256 userScore = s.accumulatedScore;
+            sumOfTierScores[tier] = bucket >= userScore ? bucket - userScore : 0;
+            s.accumulatedScore = 0;
+        }
+        if (ilShareWad > 0) {
+            uint256 absIl = uint256(-s.realizedIL);
+            sumOfAbsoluteIL = sumOfAbsoluteIL >= absIl ? sumOfAbsoluteIL - absIl : 0;
+            s.realizedIL = 0;
+        }
+
+        // 5) INTERACTIONS: withdraw from Aave. The router try/catches internally, emits
+        //    WithdrawFailed with the reason on failure, never reverts, and returns the actual
+        //    filled amount. Any shortfall is recorded to pendingClaim for a later drain.
+        uint256 actualPaid = yieldRouter.withdrawFromAave(totalUsdc);
+        if (actualPaid < totalUsdc) {
+            unchecked {
+                pendingClaim[msg.sender] += (totalUsdc - actualPaid);
+            }
+        }
+
+        // 6) Transfer the available USDC to the claimant (the router withdrew it to this hook).
+        if (actualPaid > 0) {
+            require(IERC20(usdc).transfer(msg.sender, actualPaid), "HoldfastHookV2: usdc transfer failed");
+        }
+
+        // 7) Claimed.
+        emit Claimed(tokenId, msg.sender, tierShareWad, ilShareWad, totalUsdc, actualPaid);
     }
 
     // ---------------------------------------------------------------------

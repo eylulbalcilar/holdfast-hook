@@ -45,6 +45,19 @@ contract HoldfastHookV2 is BaseHook, ISubscriber {
     using StateLibrary for IPoolManager;
     using PositionInfoLibrary for PositionInfo;
 
+    uint8 internal constant TIER_NONE = 0;
+    uint8 internal constant TIER_BRONZE = 1;
+    uint8 internal constant TIER_SILVER = 2;
+    uint8 internal constant TIER_GOLD = 3;
+
+    uint256 internal constant BRONZE_SCORE = 10 * 1e18;
+    uint256 internal constant SILVER_SCORE = 100 * 1e18;
+    uint256 internal constant GOLD_SCORE = 1_000 * 1e18;
+
+    uint256 internal constant BRONZE_BLOCKS = 1_000;
+    uint256 internal constant SILVER_BLOCKS = 10_000;
+    uint256 internal constant GOLD_BLOCKS = 100_000;
+
     /// @notice Per-position streak state, keyed by the canonical PositionManager tokenId.
     /// @dev `owner` is cached from IPositionManager.ownerOf at notifySubscribe and is the
     ///      claim-authorization source in V2 (not a live ownerOf read, not NFT.ownerOf).
@@ -247,11 +260,43 @@ contract HoldfastHookV2 is BaseHook, ISubscriber {
     }
 
     /// @inheritdoc ISubscriber
-    function notifyModifyLiquidity(uint256 tokenId, int256 liquidityChange, BalanceDelta feesAccrued)
+    /// @notice Lazy score settle plus authoritative liquidity tracking on every modify.
+    /// @dev MUST NEVER REVERT. This notification bubbles up inside the LP's own
+    ///      modifyLiquidity transaction, so a revert here would brick the LP's position
+    ///      operation. Defenses: all arithmetic is `unchecked` (wraps, never reverts) and
+    ///      the only external calls (NFT mint/upgrade) are wrapped in try/catch. No Aave,
+    ///      no require, no loops.
+    function notifyModifyLiquidity(uint256 tokenId, int256 liquidityChange, BalanceDelta /*feesAccrued*/)
         external
         onlyByPosm
     {
-        // Step 4: settle score, apply authoritative liquidityChange. Must never revert.
+        PositionStreak storage s = streaks[tokenId];
+
+        unchecked {
+            // 1) Settle accrued score with the OLD liquidity, BEFORE applying the change,
+            //    so the just-ended period is scored at the liquidity that earned it.
+            //    globalScorePerLiquidity is monotonic and snapshot <= global, so delta is
+            //    non-negative; unchecked still guards never-revert against any pathology.
+            uint256 delta = globalScorePerLiquidity[s.poolId] - s.lastGlobalScoreSnapshot;
+            s.accumulatedScore += uint256(s.liquidity) * delta;
+
+            // 2) Advance the lazy-update cursor to the current accumulator value.
+            s.lastGlobalScoreSnapshot = globalScorePerLiquidity[s.poolId];
+
+            // 3) Apply the authoritative signed liquidity change. liquidityChange may be
+            //    negative (partial or full remove). Compute in int256: widening the cached
+            //    uint128 via int256(uint256(...)) is always value-preserving and the sum is
+            //    in range for uint128-bounded inputs, so the addition cannot overflow. A
+            //    direct int256->uint128 cast is disallowed, so narrow through uint256; the
+            //    uint128 truncation never reverts.
+            int256 newLiquidity = int256(uint256(s.liquidity)) + liquidityChange;
+            // Intentional truncation: the never-revert invariant forbids a checked cast.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            s.liquidity = uint128(uint256(newLiquidity));
+        }
+
+        // 4) Lazy tier evaluation; badge mint/upgrade is revert-safe (try/catch).
+        _evaluateAndMaybeMint(tokenId);
     }
 
     /// @inheritdoc ISubscriber
@@ -268,5 +313,65 @@ contract HoldfastHookV2 is BaseHook, ISubscriber {
     /// @inheritdoc ISubscriber
     function notifyUnsubscribe(uint256 tokenId) external onlyByPosm {
         // Step 4: best-effort frozen flag only. Gas-capped; correctness must not depend on it.
+    }
+
+    // ---------------------------------------------------------------------
+    // Internal: tier evaluation (used by notifyModifyLiquidity)
+    // ---------------------------------------------------------------------
+
+    /// @dev Lazy tier transition under the dual criterion (score AND tenure). The
+    ///      HoldfastNFT mint/upgrade calls are external and can revert
+    ///      (PositionAlreadyMinted, TierDowngrade, NotHook, ...), so each is wrapped in
+    ///      try/catch; on failure the internal tier is left unchanged and the transition
+    ///      is retried on a later notify. This is what keeps notifyModifyLiquidity from
+    ///      ever reverting. nft.mint runs with from == address(0), so it does not trigger
+    ///      the NFT's settleOnTransfer callback, removing that secondary revert path.
+    function _evaluateAndMaybeMint(uint256 tokenId) private {
+        PositionStreak storage s = streaks[tokenId];
+        if (s.firstActiveBlock == 0) return;
+
+        uint256 blocksActive;
+        unchecked {
+            blocksActive = block.number - s.firstActiveBlock;
+        }
+        uint8 nextTier = _evaluateNextTier(s.currentTier, s.accumulatedScore, blocksActive);
+        if (nextTier == s.currentTier) return;
+
+        if (s.currentTier == TIER_NONE) {
+            // First badge: mint at Bronze, then upgrade in the same call if the position
+            // already clears a higher tier. The posm tokenId is the NFT position key.
+            try nft.mint(s.owner, bytes32(tokenId)) returns (uint256 badgeId) {
+                s.nftTokenId = badgeId;
+                s.currentTier = TIER_BRONZE;
+                if (nextTier > TIER_BRONZE) {
+                    try nft.upgradeTier(badgeId, nextTier) {
+                        s.currentTier = nextTier;
+                    } catch {}
+                }
+            } catch {}
+        } else {
+            try nft.upgradeTier(s.nftTokenId, nextTier) {
+                s.currentTier = nextTier;
+            } catch {}
+        }
+    }
+
+    /// @dev Pure dual-criterion tier ladder: a tier requires both its score threshold and
+    ///      its minimum active-block tenure. Returns currentTier when no higher tier is met.
+    function _evaluateNextTier(uint8 currentTier, uint256 accumulatedScore, uint256 blocksActive)
+        internal
+        pure
+        returns (uint8)
+    {
+        if (currentTier < TIER_GOLD && accumulatedScore >= GOLD_SCORE && blocksActive >= GOLD_BLOCKS) {
+            return TIER_GOLD;
+        }
+        if (currentTier < TIER_SILVER && accumulatedScore >= SILVER_SCORE && blocksActive >= SILVER_BLOCKS) {
+            return TIER_SILVER;
+        }
+        if (currentTier < TIER_BRONZE && accumulatedScore >= BRONZE_SCORE && blocksActive >= BRONZE_BLOCKS) {
+            return TIER_BRONZE;
+        }
+        return currentTier;
     }
 }

@@ -512,6 +512,15 @@ contract HoldfastHook is BaseHook, IHoldfastHook, ReentrancyGuard {
         bytes32 positionKey = nft.tokenIdToPositionKey(tokenId);
         PositionStreak storage s = streaks[positionKey];
 
+        // Self-settle pending score before computing shares so the tier-weighted
+        // share and the tier denominator (sumOfTierScores) are fresh. Uses cached
+        // poolId and ticks; PoolManager is not consulted (its key is msg.sender).
+        if (s.isActive) {
+            uint256 narrowness = ScoreAccumulator.calculateRangeNarrowness(s.poolTickLower, s.poolTickUpper);
+            _settlePositionScore(positionKey, s.poolId, s.liquidity, narrowness);
+            _evaluateAndMaybeMint(positionKey, nft.ownerOf(tokenId));
+        }
+
         // Total bonus pool is the YieldRouter's aUSDC balance (Aave supply + yield).
         uint256 totalBonusUsdc = IERC20(yieldRouter.aUsdc()).balanceOf(address(yieldRouter));
 
@@ -665,7 +674,13 @@ contract HoldfastHook is BaseHook, IHoldfastHook, ReentrancyGuard {
         uint256 globalNow = globalScorePerLiquidity[poolId];
         uint256 delta = globalNow - s.lastGlobalScoreSnapshot;
         if (delta > 0 && liquidity > 0) {
-            s.accumulatedScore += (uint256(liquidity) * delta / WAD) * rangeNarrowness / WAD;
+            uint256 gained = (uint256(liquidity) * delta / WAD) * rangeNarrowness / WAD;
+            s.accumulatedScore += gained;
+            // Keep the tier denominator in sync with accrued score so claim's
+            // tier-weighted share uses a fresh sumOfTierScores, not a stale one.
+            if (gained > 0 && s.currentTier != TIER_NONE) {
+                sumOfTierScores[s.currentTier] += gained;
+            }
         }
         s.lastGlobalScoreSnapshot = globalNow;
     }

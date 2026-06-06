@@ -82,6 +82,8 @@ cd frontend && python3 -m http.server 8000
 
 Open `http://localhost:8000` in a browser with MetaMask configured.
 
+Live demo (Base Sepolia): https://frontend-delta-six-49.vercel.app
+
 ## Setup
 
 Requirements: [Foundry](https://book.getfoundry.sh/getting-started/installation)
@@ -103,9 +105,20 @@ Copy `.env.example` to `.env` and fill in:
 - `PRIVATE_KEY` deployer key (testnet only)
 - `BASESCAN_API_KEY` for contract verification
 
+## Deployed Contracts (Base Sepolia, chainId 84532)
+
+All contracts verified on Basescan.
+
+- HoldfastHook: `0xE793eaf666ED37ef8573784f8c5fc33920dF57c4`
+- HoldfastNFT: `0x5a3a19952E6eeAA2f5bF41977ffbF1C106092097`
+- YieldRouter: `0x0F77E49237c88242652788dfCC829a61AA250C1A`
+- Demo pool (WETH/USDC, 0.3%): poolId `0x10ad9a3049c38eca566db11f305f4663ff7b68a2022a860e97e99d69dddebe9f`
+
+The demo pool is seeded with liquidity and swaps; the bonus pool has captured swap fees and supplied them to Aave V3 (visible as the aUSDC balance in the frontend).
+
 ## Status
 
-Implementation complete. Frontend functional against local Anvil fork. Base Sepolia deployment and end-to-end testnet smoke test in progress. Submission: June 11. Demo Day: June 19.
+Deployed and verified on Base Sepolia. Frontend live on Vercel. End-to-end testnet smoke test (Bronze tier claim) pending the dual-criterion block minimum. Submission: June 11. Demo Day: June 19.
 
 ## License
 

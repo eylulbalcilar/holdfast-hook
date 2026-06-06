@@ -1,51 +1,283 @@
-
-╭-------------+--------------------------------------------------------+--------------------------------------------------------------------╮
-| Type        | Signature                                              | Selector                                                           |
-+===========================================================================================================================================+
-| event       | HookSet(address)                                       | 0x4eab7b127c764308788622363ad3e9532de3dfba7845bd4f84c125a22544255a |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| event       | OwnershipTransferred(address,address)                  | 0x8be0079c531659141344cd1fd0a4f28419497f9722a3daafe3b4186f6b6457e0 |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| event       | Supplied(uint256)                                      | 0x544e668bbe767cde49bd57b791c5511ab932d6a373f42a04237c509af06befd7 |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| event       | WithdrawFailed(uint256,bytes)                          | 0x7277f632c80e702c37df88b4e59a0fff4c7c907f7a94feff06af4e40e018e704 |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| event       | Withdrawn(uint256,uint256)                             | 0x0c875c8d391179c5cf7ad8303d268efd50b8beb78b671f85cd54bfb91eb8ef40 |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| error       | AaveReserveInactive()                                  | 0xe982b21e                                                         |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| error       | HookAlreadySet()                                       | 0xbef9156a                                                         |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| error       | NotHook()                                              | 0xc72cfc38                                                         |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| error       | OwnableInvalidOwner(address)                           | 0x1e4fbdf7                                                         |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| error       | OwnableUnauthorizedAccount(address)                    | 0x118cdaa7                                                         |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| error       | ZeroAddress()                                          | 0xd92e233d                                                         |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| error       | ZeroAmount()                                           | 0x1f2a2005                                                         |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| function    | aUsdc() view returns (address)                         | 0x65196e1e                                                         |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| function    | aavePool() view returns (IAaveV3Pool)                  | 0xa03e4bc3                                                         |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| function    | hook() view returns (address)                          | 0x7f5a7c7b                                                         |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| function    | owner() view returns (address)                         | 0x8da5cb5b                                                         |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| function    | renounceOwnership() nonpayable                         | 0x715018a6                                                         |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| function    | setHook(address) nonpayable                            | 0x3dfd3873                                                         |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| function    | supplyToAave(uint256) nonpayable                       | 0x70ded44d                                                         |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| function    | transferOwnership(address) nonpayable                  | 0xf2fde38b                                                         |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| function    | usdc() view returns (IERC20)                           | 0x3e413bee                                                         |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| function    | withdrawFromAave(uint256) nonpayable returns (uint256) | 0x688f237b                                                         |
-|-------------+--------------------------------------------------------+--------------------------------------------------------------------|
-| constructor | constructor(address,address,address) nonpayable        |                                                                    |
-╰-------------+--------------------------------------------------------+--------------------------------------------------------------------╯
-
+[
+  {
+    "type": "constructor",
+    "inputs": [
+      {
+        "name": "_aavePool",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "_usdc",
+        "type": "address",
+        "internalType": "address"
+      },
+      {
+        "name": "_owner",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "aUsdc",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "aavePool",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract IAaveV3Pool"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "hook",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "owner",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "renounceOwnership",
+    "inputs": [],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "setHook",
+    "inputs": [
+      {
+        "name": "_hook",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "supplyToAave",
+    "inputs": [
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "transferOwnership",
+    "inputs": [
+      {
+        "name": "newOwner",
+        "type": "address",
+        "internalType": "address"
+      }
+    ],
+    "outputs": [],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "function",
+    "name": "usdc",
+    "inputs": [],
+    "outputs": [
+      {
+        "name": "",
+        "type": "address",
+        "internalType": "contract IERC20"
+      }
+    ],
+    "stateMutability": "view"
+  },
+  {
+    "type": "function",
+    "name": "withdrawFromAave",
+    "inputs": [
+      {
+        "name": "amount",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "outputs": [
+      {
+        "name": "actual",
+        "type": "uint256",
+        "internalType": "uint256"
+      }
+    ],
+    "stateMutability": "nonpayable"
+  },
+  {
+    "type": "event",
+    "name": "HookSet",
+    "inputs": [
+      {
+        "name": "hook",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "OwnershipTransferred",
+    "inputs": [
+      {
+        "name": "previousOwner",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      },
+      {
+        "name": "newOwner",
+        "type": "address",
+        "indexed": true,
+        "internalType": "address"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Supplied",
+    "inputs": [
+      {
+        "name": "amount",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "WithdrawFailed",
+    "inputs": [
+      {
+        "name": "requested",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "reason",
+        "type": "bytes",
+        "indexed": false,
+        "internalType": "bytes"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "event",
+    "name": "Withdrawn",
+    "inputs": [
+      {
+        "name": "requested",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      },
+      {
+        "name": "actual",
+        "type": "uint256",
+        "indexed": false,
+        "internalType": "uint256"
+      }
+    ],
+    "anonymous": false
+  },
+  {
+    "type": "error",
+    "name": "AaveReserveInactive",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "HookAlreadySet",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "NotHook",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "OwnableInvalidOwner",
+    "inputs": [
+      {
+        "name": "owner",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "OwnableUnauthorizedAccount",
+    "inputs": [
+      {
+        "name": "account",
+        "type": "address",
+        "internalType": "address"
+      }
+    ]
+  },
+  {
+    "type": "error",
+    "name": "ZeroAddress",
+    "inputs": []
+  },
+  {
+    "type": "error",
+    "name": "ZeroAmount",
+    "inputs": []
+  }
+]

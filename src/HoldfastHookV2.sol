@@ -73,6 +73,8 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
 
     // WAD-internal bonus-pool accounting; USDC is 6 decimals, WAD is 18.
     uint256 internal constant USDC_TO_WAD = 1e12; // WAD / 1e6, scales a USDC amount up to WAD
+    uint256 internal constant WAD = 1e18;
+    uint8 internal constant VOL_BUFFER_LEN = 10;
 
     /// @notice Per-position streak state, keyed by the canonical PositionManager tokenId.
     /// @dev `owner` is cached from IPositionManager.ownerOf at notifySubscribe and is the
@@ -109,9 +111,23 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
         return streaks[tokenId];
     }
 
-    /// @notice Curve gauge-style pool-level score accumulator, incremented per swap (Step 5+).
-    /// @dev Read here as the lazy-update snapshot cursor; written by the swap path later.
+    /// @notice Curve gauge-style pool-level score accumulator, incremented on every swap.
+    /// @dev Read by _settleScore as the lazy-update cursor; advanced in _afterSwap.
     mapping(PoolId => uint256) public globalScorePerLiquidity;
+
+    /// @notice Block at which globalScorePerLiquidity was last advanced for a pool.
+    mapping(PoolId => uint256) public lastGlobalScoreUpdateBlock;
+
+    /// @notice Per-pool volatility ring buffer (10 recent sqrtPriceX96 observations).
+    struct PoolVolatility {
+        uint256[10] recentPriceObservations;
+        uint8 cursor;
+        uint256 cachedVolatility;
+        uint256 lastVolUpdate;
+    }
+
+    /// @notice Per-pool volatility state, seeded in _afterInitialize, updated each swap.
+    mapping(PoolId => PoolVolatility) public volatility;
 
     /// @notice Reward finalized to an owner whose position was re-subscribed under a new owner.
     /// @dev WAD-scaled accrued score parked for later conversion and payout via the claim/
@@ -202,31 +218,91 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
 
     // ---------------------------------------------------------------------
     // Pool lifecycle callbacks (onlyPoolManager via BaseHook external wrappers)
-    // STEP 2/3: selector-only stubs; logic lands in a later step.
     // ---------------------------------------------------------------------
 
-    function _afterInitialize(address, PoolKey calldata, uint160, int24)
+    /// @dev Seed the volatility ring buffer with the initial price so the first swaps
+    ///      produce low-variance output rather than a cold-start ZeroSqrtPriceObservation
+    ///      revert (DESIGN.md), and anchor the global-score update block.
+    function _afterInitialize(address, PoolKey calldata key, uint160 sqrtPriceX96, int24)
         internal
         override
         returns (bytes4)
     {
+        PoolId poolId = key.toId();
+        PoolVolatility storage vol = volatility[poolId];
+        for (uint256 i = 0; i < VOL_BUFFER_LEN; i++) {
+            vol.recentPriceObservations[i] = sqrtPriceX96;
+        }
+        vol.cursor = 0;
+        vol.cachedVolatility = 0;
+        vol.lastVolUpdate = block.number;
+        lastGlobalScoreUpdateBlock[poolId] = block.number;
         return this.afterInitialize.selector;
     }
 
+    /// @dev Intentional no-op. V2 has no before-swap logic; the BEFORE_SWAP_FLAG is part of
+    ///      the permission set but the body deliberately does nothing. `pure` documents that.
     function _beforeSwap(address, PoolKey calldata, SwapParams calldata, bytes calldata)
         internal
+        pure
         override
         returns (bytes4, BeforeSwapDelta, uint24)
     {
-        return (this.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
+        return (BaseHook.beforeSwap.selector, BeforeSwapDeltaLibrary.ZERO_DELTA, 0);
     }
 
-    function _afterSwap(address, PoolKey calldata, SwapParams calldata, BalanceDelta, bytes calldata)
+    /// @dev Score-accumulation path: refresh the volatility factor from the ring buffer and
+    ///      advance the Curve-gauge accumulator globalScorePerLiquidity. STEP 9 scope is score
+    ///      accrual only; the USDC capture into the bonus pool (take + supplyToAave + return
+    ///      delta) is a later step, so a zero hook delta is returned for now.
+    function _afterSwap(address, PoolKey calldata key, SwapParams calldata, BalanceDelta, bytes calldata)
         internal
         override
         returns (bytes4, int128)
     {
+        PoolId poolId = key.toId();
+        uint256 vf = _updateVolatility(poolId);
+        _advanceGlobalScore(poolId, vf);
         return (this.afterSwap.selector, 0);
+    }
+
+    /// @dev Push the current sqrtPriceX96 into the ring buffer and recompute the cached
+    ///      volatility factor over the ordered window via ScoreAccumulator.
+    function _updateVolatility(PoolId poolId) internal returns (uint256 vf) {
+        PoolVolatility storage vol = volatility[poolId];
+        (uint160 sqrtPriceX96,,,) = poolManager.getSlot0(poolId);
+        vol.recentPriceObservations[vol.cursor] = sqrtPriceX96;
+        vol.cursor = uint8((vol.cursor + 1) % VOL_BUFFER_LEN);
+        uint160[10] memory ordered = _orderedObservations(vol);
+        vf = ScoreAccumulator.calculateVolatilityFactor(ordered);
+        vol.cachedVolatility = vf;
+        vol.lastVolUpdate = block.number;
+    }
+
+    /// @dev Advance the pool-level accumulator: per block, each unit of liquidity earns
+    ///      volatilityFactor / totalLiquidity. liquidityShare (numerator) and rangeNarrowness
+    ///      are applied per position in _settleScore.
+    function _advanceGlobalScore(PoolId poolId, uint256 vf) internal {
+        uint256 totalLiquidity = poolManager.getLiquidity(poolId);
+        uint256 blocksDelta = block.number - lastGlobalScoreUpdateBlock[poolId];
+        if (totalLiquidity > 0 && blocksDelta > 0 && vf > 0) {
+            globalScorePerLiquidity[poolId] += (vf * blocksDelta * WAD) / totalLiquidity;
+        }
+        lastGlobalScoreUpdateBlock[poolId] = block.number;
+    }
+
+    /// @dev Return the 10-observation window ordered oldest-to-newest from the ring buffer.
+    function _orderedObservations(PoolVolatility storage vol)
+        internal
+        view
+        returns (uint160[10] memory ordered)
+    {
+        uint8 c = vol.cursor;
+        for (uint256 i = 0; i < VOL_BUFFER_LEN; i++) {
+            // Observations are stored sqrtPriceX96 values (uint160 range); the cast is exact.
+            // forge-lint: disable-next-line(unsafe-typecast)
+            ordered[i] = uint160(vol.recentPriceObservations[(c + i) % VOL_BUFFER_LEN]);
+        }
     }
 
     // ---------------------------------------------------------------------
@@ -574,8 +650,17 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
         PositionStreak storage s = streaks[tokenId];
         unchecked {
             uint256 delta = globalScorePerLiquidity[s.poolId] - s.lastGlobalScoreSnapshot;
-            if (delta != 0 && s.liquidity != 0) {
-                uint256 gained = uint256(s.liquidity) * delta;
+            // The tickUpper > tickLower term is defensive: a subscribed position always has a
+            // valid range (posm enforces it), so this only excludes an uninitialized streak
+            // and guarantees calculateRangeNarrowness cannot revert on the never-revert path.
+            if (delta != 0 && s.liquidity != 0 && s.tickUpper > s.tickLower) {
+                // blockScore = liquidityShare * volatilityFactor * rangeNarrowness, accumulated.
+                // delta already carries volatilityFactor and 1/totalLiquidity from
+                // _advanceGlobalScore; liquidity supplies the share numerator; rangeNarrowness
+                // is the per-position factor applied here. Two WAD divisions match the
+                // WAD-scaled inputs (V1 ScoreAccumulator convention).
+                uint256 narrowness = ScoreAccumulator.calculateRangeNarrowness(s.tickLower, s.tickUpper);
+                uint256 gained = (uint256(s.liquidity) * delta / WAD) * narrowness / WAD;
                 s.accumulatedScore += gained;
                 if (s.currentTier != TIER_NONE) {
                     sumOfTierScores[s.currentTier] += gained;

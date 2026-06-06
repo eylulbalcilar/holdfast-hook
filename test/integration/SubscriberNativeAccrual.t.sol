@@ -25,7 +25,7 @@ import {IPositionDescriptor} from "v4-periphery/interfaces/IPositionDescriptor.s
 import {IWETH9} from "v4-periphery/interfaces/external/IWETH9.sol";
 import {Actions} from "v4-periphery/libraries/Actions.sol";
 
-import {HoldfastHook} from "../../src/HoldfastHook.sol";
+import {HoldfastHookV2} from "../../src/HoldfastHookV2.sol";
 import {HoldfastNFT} from "../../src/HoldfastNFT.sol";
 import {YieldRouter} from "../../src/YieldRouter.sol";
 import {MockYieldRouter} from "../mocks/MockYieldRouter.sol";
@@ -36,27 +36,17 @@ interface IERC721Minimal {
 }
 
 /// @title SubscriberNativeAccrualTest
-/// @notice V2 subscriber-native baseline. Exercises the intended end-to-end flow:
-///         an LP mints a position through the canonical Uniswap PositionManager,
-///         subscribes that position to the Holdfast hook via posm.subscribe, swaps
-///         churn the pool, blocks advance past the Bronze tenure floor, and the
-///         per-position score is asserted to have accrued, keyed by the canonical
-///         ERC-721 tokenId (not a hookData-derived position key).
+/// @notice V2 subscriber-native accrual test. Exercises the intended end-to-end flow against
+///         HoldfastHookV2: an LP mints a position through the canonical Uniswap
+///         PositionManager, subscribes it to the hook via posm.subscribe, swaps churn the
+///         pool (advancing the pool-level Curve-gauge accumulator in _afterSwap), blocks
+///         advance past the Bronze tenure floor, and a tiny posm liquidity modify fires
+///         notifyModifyLiquidity which settles the accrued score. The per-position score is
+///         then asserted to be non-zero, keyed by the canonical ERC-721 tokenId.
 ///
-///         EXPECTED ON CURRENT main: this test FAILS. HoldfastHook (V1) is a
-///         BaseHook only; it does not implement ISubscriber, so it has no
-///         notifySubscribe handler. PositionManager.subscribe calls
-///         ISubscriber.notifySubscribe on the hook, the call hits a nonexistent
-///         selector with no fallback, and subscribe bubbles up SubscriptionReverted.
-///         The test reverts at the posm.subscribe step and never reaches the
-///         accrual assertion. Committed RED as the V2 baseline; the subscriber
-///         handler work makes it GREEN.
-///
-///         The mint passes hookData = abi.encode(lp) purely so the V1 hook's
-///         afterAddLiquidity does not revert with HookDataMissing before we reach
-///         subscribe (the V1 RED point is the subscribe call, not the mint). V2
-///         resolves owner from PositionManager and ignores this hookData, so the
-///         encoding is forward-compatible.
+///         This was committed RED against V1 (which has no ISubscriber handler, so subscribe
+///         reverted). V2 implements the subscriber surface and the swap-side accumulator,
+///         turning it GREEN through the natural flow with no test-only backdoor.
 contract SubscriberNativeAccrualTest is Test, DeployPermit2 {
     using PoolIdLibrary for PoolKey;
 
@@ -70,7 +60,7 @@ contract SubscriberNativeAccrualTest is Test, DeployPermit2 {
     Currency internal currency0;
     Currency internal currency1;
 
-    HoldfastHook internal hook;
+    HoldfastHookV2 internal hook;
     HoldfastNFT internal nft;
     MockYieldRouter internal mockRouter;
 
@@ -110,26 +100,27 @@ contract SubscriberNativeAccrualTest is Test, DeployPermit2 {
         nft = new HoldfastNFT(address(this));
         mockRouter = new MockYieldRouter();
 
-        // Mine + deploy the real HoldfastHook (not the harness) at a permission-valid
-        // CREATE2 address. usdc = token0.
+        // Deploy the canonical Uniswap v4 PositionManager locally (same contract code as Base
+        // Sepolia 0x4b2c77d209d3405f41a037ec6c77f7f5b8e2ca80). The hook takes its address at
+        // construction (it is the sole authorized ISubscriber caller via onlyByPosm).
+        posm = _deployPosm(address(manager), address(permit2));
+
+        // Mine + deploy HoldfastHookV2 at a permission-valid CREATE2 address. V2 permission
+        // set: afterInitialize, beforeSwap, afterSwap, afterSwapReturnDelta. usdc = token0.
         uint160 flags = uint160(
-            Hooks.AFTER_INITIALIZE_FLAG | Hooks.AFTER_ADD_LIQUIDITY_FLAG | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG
-                | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
+            Hooks.AFTER_INITIALIZE_FLAG | Hooks.BEFORE_SWAP_FLAG | Hooks.AFTER_SWAP_FLAG
                 | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
         );
-        bytes memory cargs =
-            abi.encode(IPoolManager(address(manager)), nft, YieldRouter(address(mockRouter)), address(token0));
+        bytes memory cargs = abi.encode(
+            IPoolManager(address(manager)), posm, nft, YieldRouter(address(mockRouter)), address(token0)
+        );
         (address hookAddr, bytes32 salt) =
-            HookMiner.find(address(this), flags, type(HoldfastHook).creationCode, cargs);
-        hook = new HoldfastHook{salt: salt}(
-            IPoolManager(address(manager)), nft, YieldRouter(address(mockRouter)), address(token0)
+            HookMiner.find(address(this), flags, type(HoldfastHookV2).creationCode, cargs);
+        hook = new HoldfastHookV2{salt: salt}(
+            IPoolManager(address(manager)), posm, nft, YieldRouter(address(mockRouter)), address(token0)
         );
         require(address(hook) == hookAddr, "hook mined address mismatch");
         nft.setHook(address(hook));
-
-        // Deploy the canonical Uniswap v4 PositionManager locally (same contract code
-        // as Base Sepolia 0x4b2c77d209d3405f41a037ec6c77f7f5b8e2ca80).
-        posm = _deployPosm(address(manager), address(permit2));
 
         poolKey = PoolKey({
             currency0: currency0,
@@ -207,9 +198,8 @@ contract SubscriberNativeAccrualTest is Test, DeployPermit2 {
         }
     }
 
-    /// @dev RED baseline. The subscriber-native flow must accrue per-position score
-    ///      keyed by the canonical PositionManager tokenId. Reverts at posm.subscribe
-    ///      on current main (HoldfastHook has no notifySubscribe handler).
+    /// @dev GREEN target. The subscriber-native flow accrues per-position score keyed by the
+    ///      canonical PositionManager tokenId.
     function test_subscriberNativeAccrual_scoreKeyedByTokenId() public {
         // 1. LP mints a canonical PositionManager position.
         uint256 tokenId = posm.nextTokenId();
@@ -217,22 +207,44 @@ contract SubscriberNativeAccrualTest is Test, DeployPermit2 {
         assertEq(IERC721Minimal(address(posm)).ownerOf(tokenId), lp, "LP must own the minted position NFT");
 
         // 2. LP subscribes the position to the Holdfast hook (the V2 entrypoint).
-        //    REVERTS ON CURRENT main: HoldfastHook does not implement ISubscriber.
         vm.prank(lp);
         posm.subscribe(tokenId, address(hook), "");
 
-        // 3. Swap churn plus block advancement past the Bronze tenure floor drive
-        //    the per-position accumulator.
+        // 3. Swap churn plus block advancement past the Bronze tenure floor drive the
+        //    pool-level Curve-gauge accumulator (globalScorePerLiquidity) in _afterSwap.
         _churn();
         vm.roll(block.number + BRONZE_BLOCKS + 1);
         _swap(-int256(2e16), true);
 
-        // 4. Score must accrue, keyed by the canonical tokenId.
-        bytes32 key = bytes32(tokenId);
+        // 4. Accrual is lazy: it folds into the position only on a notify. A tiny posm
+        //    liquidity increase fires notifyModifyLiquidity -> _settleScore. This is the
+        //    natural V2 settle trigger (the subscriber notification path itself), not a
+        //    test-only backdoor.
+        _increaseLiquidity(lp, tokenId, 1e12);
+
+        // 5. Score must have accrued, keyed by the canonical tokenId (V2 getStreak(uint256)).
         assertGt(
-            hook.getStreak(key).accumulatedScore,
+            hook.getStreak(tokenId).accumulatedScore,
             0,
-            "score must accrue keyed by tokenId after subscribe"
+            "score must accrue keyed by tokenId after subscribe + settle"
         );
+    }
+
+    /// @dev Triggers a settle through the natural subscriber path: a posm liquidity increase
+    ///      notifies the hook via notifyModifyLiquidity. Finalized with CLOSE_CURRENCY per
+    ///      token (auto settles or takes by delta sign), which is robust whether the position
+    ///      is single- or double-sided after the swaps moved the price.
+    function _increaseLiquidity(address owner_, uint256 tokenId, uint256 liquidity) internal {
+        bytes memory actions = abi.encodePacked(
+            uint8(Actions.INCREASE_LIQUIDITY), uint8(Actions.CLOSE_CURRENCY), uint8(Actions.CLOSE_CURRENCY)
+        );
+        bytes[] memory params = new bytes[](3);
+        params[0] =
+            abi.encode(tokenId, liquidity, uint128(type(uint128).max), uint128(type(uint128).max), bytes(""));
+        params[1] = abi.encode(poolKey.currency0);
+        params[2] = abi.encode(poolKey.currency1);
+        bytes memory unlockData = abi.encode(actions, params);
+        vm.prank(owner_);
+        posm.modifyLiquidities(unlockData, block.timestamp + 1);
     }
 }

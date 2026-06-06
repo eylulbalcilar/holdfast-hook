@@ -109,12 +109,12 @@ Copy `.env.example` to `.env` and fill in:
 
 All contracts verified on Basescan.
 
-- HoldfastHook: `0xE793eaf666ED37ef8573784f8c5fc33920dF57c4`
-- HoldfastNFT: `0x5a3a19952E6eeAA2f5bF41977ffbF1C106092097`
-- YieldRouter: `0x0F77E49237c88242652788dfCC829a61AA250C1A`
-- Demo pool (WETH/USDC, 0.3%): poolId `0x10ad9a3049c38eca566db11f305f4663ff7b68a2022a860e97e99d69dddebe9f`
+- HoldfastHook: `0xc02116437a2D941cA263bB4BBdd25De9DA5317c4`
+- HoldfastNFT: `0x661A7c1aD03d8672Efa7d08bB9AAF115814DA424`
+- YieldRouter: `0xf534D903D079B6f6e58dc92346d3816b781ad10F`
+- Demo pool (WETH/USDC, 0.3%): poolId `0xc4e68581dc1f1f1e862511df72f12eeadce96dde6b099cc7aea8f116770979ed`
 
-The demo pool is seeded with liquidity and swaps; the bonus pool has captured swap fees and supplied them to Aave V3 (visible as the aUSDC balance in the frontend).
+The demo pool is seeded with liquidity and swaps. As swaps accrue fees, the hook carves out the protocol share and the YieldRouter supplies it to Aave V3; the captured amount is visible as the YieldRouter aUSDC balance in the frontend.
 
 ## Status
 

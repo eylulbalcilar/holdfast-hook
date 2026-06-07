@@ -465,15 +465,11 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
         // forge-lint: disable-next-line(unsafe-typecast)
         s.frozenAt = uint128(block.number);
 
-        // 4) Tier accounting. Clamped subtraction so a position that never reached a tier
-        //    (currentTier == NONE) or whose score was never added to the bucket cannot
-        //    underflow. abs(IL) (the formula returns a non-positive value, so il < 0 means a
-        //    real loss) feeds the realized-IL claim arm.
-        if (s.currentTier != TIER_NONE) {
-            uint256 bucket = sumOfTierScores[s.currentTier];
-            uint256 score = s.accumulatedScore;
-            sumOfTierScores[s.currentTier] = bucket >= score ? bucket - score : 0;
-        }
+        // 4) Tier accounting. Locked model: the score stays in sumOfTierScores until PAID, so a
+        //    burn does NOT decrement it here. The frozen position keeps its score in the
+        //    denominator and remains claimable; claim 8b removes it when the position is paid.
+        //    Only the realized-IL arm is fed here. abs(IL) (the formula returns a non-positive
+        //    value, so il < 0 means a real loss) feeds the realized-IL claim arm.
         if (il < 0) {
             unchecked {
                 // Safe: il < 0 here, so -il is positive and the uint256 cast is exact.
@@ -513,9 +509,9 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
         if (msg.sender != s.owner) revert NotPositionOwner();
 
         // Settle and re-evaluate tier only while the streak is active. A frozen/burned streak
-        // already had its final settle and tier accounting in notifyBurn (which also removed
-        // it from sumOfTierScores); re-running here would double-count the score and re-add a
-        // burned position to the tier sum, breaking the notifyBurn decrement invariant.
+        // already had its final settle in notifyBurn; re-running here would double-count the
+        // score. The frozen position's score stays in sumOfTierScores (locked model) and is
+        // removed by the 8b effects below when this claim pays it out.
         if (s.isActive) {
             _settleScore(tokenId);
             _evaluateAndMaybeMint(tokenId);
@@ -730,9 +726,9 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
 
     /// @dev Lazy Curve-gauge settle: fold the pool accumulator delta into the position's
     ///      score and, for an already-tiered position, into its tier bucket so
-    ///      sumOfTierScores stays exact for the notifyBurn decrement. Storage-only and fully
-    ///      unchecked: never reverts, so it is safe to call from the never-revert notify
-    ///      handlers as well as from the claim flow. This is the single place where an
+    ///      sumOfTierScores stays exact for the eventual claim/withdraw decrement. Storage-only
+    ///      and fully unchecked: never reverts, so it is safe to call from the never-revert
+    ///      notify handlers as well as from the claim flow. This is the single place where an
     ///      incremental score gain updates sumOfTierScores.
     function _settleScore(uint256 tokenId) private {
         PositionStreak storage s = streaks[tokenId];

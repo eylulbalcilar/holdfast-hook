@@ -10,6 +10,7 @@ library BaseSepoliaConstants {
     uint256 internal constant CHAIN_ID = 84532;
 
     address internal constant POOL_MANAGER = BaseSepoliaAddresses.POOL_MANAGER;
+    address internal constant POSITION_MANAGER = BaseSepoliaAddresses.POSITION_MANAGER;
     address internal constant AAVE_V3_POOL = BaseSepoliaAddresses.AAVE_POOL;
     address internal constant USDC = BaseSepoliaAddresses.USDC;
     address internal constant WETH = BaseSepoliaAddresses.WETH;

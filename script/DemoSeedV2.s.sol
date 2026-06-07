@@ -66,6 +66,9 @@ contract DemoSeedV2 is Script {
         // Whether to run the settling liquidity decrease. Set false to stop after the swap churn
         // (e.g. a first seeding phase) and settle in a later run once block tenure has accrued.
         bool doSettle = vm.envOr("DO_SETTLE", true);
+        // Whether to mint + subscribe a new position. Set false to reuse an existing subscribed
+        // position (TOKEN_ID) for a later phase: just swap churn and settle, no new mint.
+        bool doMint = vm.envOr("DO_MINT", true);
 
         _usdc = BaseSepoliaAddresses.USDC;
         _weth = BaseSepoliaAddresses.WETH;
@@ -93,17 +96,24 @@ contract DemoSeedV2 is Script {
             console2.log("Pool initialized");
         }
 
-        // Permit2 two-step approvals (token -> Permit2, then Permit2 -> PositionManager) per token.
-        _approvePermit2(_usdc);
-        _approvePermit2(_weth);
+        uint256 tokenId;
+        if (doMint) {
+            // Permit2 two-step approvals (token -> Permit2, then Permit2 -> PositionManager) per token.
+            _approvePermit2(_usdc);
+            _approvePermit2(_weth);
 
-        // Mint a position through the canonical PositionManager, then subscribe it to the hook.
-        uint256 tokenId = _posm.nextTokenId();
-        _mint(wethAmt, usdcAmt);
-        console2.log("Minted tokenId:", tokenId);
+            // Mint a position through the canonical PositionManager, then subscribe it to the hook.
+            tokenId = _posm.nextTokenId();
+            _mint(wethAmt, usdcAmt);
+            console2.log("Minted tokenId:", tokenId);
 
-        _posm.subscribe(tokenId, _hook, "");
-        console2.log("Subscribed to hook");
+            _posm.subscribe(tokenId, _hook, "");
+            console2.log("Subscribed to hook");
+        } else {
+            // Reuse an existing subscribed position (no mint, no re-subscribe).
+            tokenId = vm.envUint("TOKEN_ID");
+            console2.log("Reusing existing tokenId:", tokenId);
+        }
 
         // Swap churn drives globalScorePerLiquidity via afterSwap.
         IERC20(_usdc).approve(address(_swapRouter), type(uint256).max);

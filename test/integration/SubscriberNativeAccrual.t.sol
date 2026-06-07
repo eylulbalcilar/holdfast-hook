@@ -472,4 +472,113 @@ contract SubscriberNativeAccrualTest is Test, DeployPermit2 {
         assertTrue(badge3 != badge1 && badge3 != badge2, "returning LP1's badge is fresh, not a re-collision");
         assertEq(nft.ownerOf(badge3), lp, "returning LP1 owns the fresh badge");
     }
+
+    /// @dev Partial liquidity remove through posm (DECREASE_LIQUIDITY + CLOSE_CURRENCY per token),
+    ///      which fires notifyModifyLiquidity with a negative liquidityChange.
+    function _decreaseLiquidity(address owner_, uint256 tokenId, uint256 liquidity) internal {
+        bytes memory actions = abi.encodePacked(
+            uint8(Actions.DECREASE_LIQUIDITY), uint8(Actions.CLOSE_CURRENCY), uint8(Actions.CLOSE_CURRENCY)
+        );
+        bytes[] memory params = new bytes[](3);
+        params[0] = abi.encode(tokenId, liquidity, uint128(0), uint128(0), bytes(""));
+        params[1] = abi.encode(poolKey.currency0);
+        params[2] = abi.encode(poolKey.currency1);
+        bytes memory unlockData = abi.encode(actions, params);
+        vm.prank(owner_);
+        posm.modifyLiquidities(unlockData, block.timestamp + 1);
+    }
+
+    function _claimAs(address owner_, uint256 tokenId) internal {
+        vm.prank(owner_);
+        hook.claim(tokenId);
+    }
+
+    /// @notice Partial liquidity remove. The remove settles the prior period at the OLD liquidity
+    ///         before applying the decrement (settle-before-apply ordering), the cached liquidity
+    ///         halves, the streak stays active, and a later settle accrues at the new lower
+    ///         liquidity.
+    /// @dev Uses a constant-liquidity control LP. A single-LP pool cannot observe the ordering or
+    ///      the rate change: liquidityShare stays 1 because totalLiquidity tracks the lone LP, so
+    ///      halving its liquidity halves the gauge denominator too. The control LP (B), settling
+    ///      the same churn at unchanged liquidity, makes both effects observable.
+    function test_partialRemove_settleBeforeApply() public {
+        uint256 tA = posm.nextTokenId();
+        _mintPosition(lp, LIQ);
+        _subscribeAs(lp, tA);
+
+        uint256 tB = posm.nextTokenId();
+        _mintPosition(lp2, LIQ);
+        _subscribeAs(lp2, tB);
+
+        // Phase 1 churn (kept under BRONZE_BLOCKS so both stay tier NONE; claim is a clean settle).
+        _churn();
+
+        // A's partial remove settles the phase-1 churn at the OLD liquidity (LIQ) BEFORE the
+        // decrement; B (control) settles the same churn at LIQ via claim, with no liquidity change.
+        _decreaseLiquidity(lp, tA, LIQ / 2);
+        _claimAs(lp2, tB);
+
+        uint256 scoreA1 = hook.getStreak(tA).accumulatedScore;
+        uint256 scoreB1 = hook.getStreak(tB).accumulatedScore;
+
+        // Cached liquidity decremented correctly; streak stays active and unfrozen.
+        assertEq(hook.getStreak(tA).liquidity, LIQ / 2, "A liquidity halved by the partial remove");
+        assertEq(hook.getStreak(tB).liquidity, LIQ, "B liquidity unchanged");
+        assertTrue(hook.getStreak(tA).isActive, "A still active after partial remove");
+        assertEq(hook.getStreak(tA).frozenAt, 0, "A not frozen by partial remove");
+
+        // Settle-before-apply: A's pre-remove period was scored at LIQ (== control), not LIQ/2.
+        assertGt(scoreA1, 0, "A accrued in phase 1");
+        assertEq(scoreA1, scoreB1, "A settled phase 1 at OLD liquidity (equal to the LIQ control)");
+
+        // Phase 2 churn, then both settle again. A is now at LIQ/2, B still at LIQ.
+        _churn();
+        _claimAs(lp, tA);
+        _claimAs(lp2, tB);
+        uint256 incrA = hook.getStreak(tA).accumulatedScore - scoreA1;
+        uint256 incrB = hook.getStreak(tB).accumulatedScore - scoreB1;
+
+        // A's post-remove settle accrues at the new lower liquidity: A (LIQ/2) earns ~half of B (LIQ).
+        assertGt(incrA, 0, "A still accrues after the remove");
+        assertLt(incrA, incrB, "A accrues less than the full-liquidity control");
+        assertApproxEqRel(incrA * 2, incrB, 1e14, "A's post-remove rate is ~half (LIQ/2 vs LIQ)");
+    }
+
+    /// @notice Reconciliation does not depend on notifyUnsubscribe (the gas-capped, result-swallowed
+    ///         handler). notifyUnsubscribe's only effect is the best-effort isFrozen flag; the
+    ///         authoritative reconciliation happens entirely in notifySubscribe and never reads
+    ///         isFrozen, so a dropped notifyUnsubscribe changes nothing.
+    /// @dev Proven via the real transfer path (no separate low-gas posm stack needed, which would
+    ///      require a second hook bound to a second posm). The test isolates notifyUnsubscribe's
+    ///      sole effect (isFrozen) and shows reconciliation is driven by owner/score/tier in
+    ///      notifySubscribe, gated on (isActive && owner != newOwner) and not on isFrozen.
+    function test_droppedUnsubscribe_reconciliationIndependentOfIsFrozen() public {
+        uint256 tokenId = posm.nextTokenId();
+        _mintPosition(lp, LIQ);
+        _subscribeAs(lp, tokenId);
+        _accrueAndSettleToTier(lp, tokenId);
+
+        uint8 tier = hook.getStreak(tokenId).currentTier;
+        uint256 s1 = hook.getStreak(tokenId).accumulatedScore;
+        assertGe(tier, 1, "LP1 reached a tier");
+        assertFalse(hook.getStreak(tokenId).isFrozen, "active position is not frozen");
+
+        // Transfer fires notifyUnsubscribe. Its ONLY effect is the isFrozen flag: it does NOT
+        // reconcile. After transfer the streak is unchanged except for isFrozen.
+        _transferPosition(lp, lp2, tokenId);
+        assertTrue(hook.getStreak(tokenId).isFrozen, "notifyUnsubscribe set the best-effort frozen flag");
+        assertEq(hook.pendingScoreByTier(lp, tier), 0, "notifyUnsubscribe did NOT reconcile (no parking)");
+        assertEq(hook.getStreak(tokenId).owner, lp, "notifyUnsubscribe did NOT change owner");
+        assertEq(hook.getStreak(tokenId).accumulatedScore, s1, "notifyUnsubscribe did NOT touch score");
+
+        // Reconciliation happens entirely in notifySubscribe. Its owner-change branch is gated on
+        // (isActive && owner != newOwner), never on isFrozen, so a dropped notifyUnsubscribe
+        // (isFrozen left false) would produce the identical result.
+        _subscribeAs(lp2, tokenId);
+        assertEq(
+            hook.pendingScoreByTier(lp, tier), s1, "notifySubscribe finalized LP1's score regardless of isFrozen"
+        );
+        assertEq(hook.getStreak(tokenId).owner, lp2, "streak reset to LP2");
+        assertFalse(hook.getStreak(tokenId).isFrozen, "reset cleared isFrozen; reconciliation never read it");
+    }
 }

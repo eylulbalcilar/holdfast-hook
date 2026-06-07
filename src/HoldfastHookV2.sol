@@ -129,10 +129,17 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
     /// @notice Per-pool volatility state, seeded in _afterInitialize, updated each swap.
     mapping(PoolId => PoolVolatility) public volatility;
 
-    /// @notice Reward finalized to an owner whose position was re-subscribed under a new owner.
-    /// @dev WAD-scaled accrued score parked for later conversion and payout via the claim/
-    ///      withdraw path. Writing here is a storage write only, no external call.
-    mapping(address => uint256) public pendingClaim;
+    /// @notice Tier-indexed WAD score entitlement finalized to an owner whose position was
+    ///         re-subscribed under a new owner. Index is the tier (1=bronze, 2=silver, 3=gold;
+    ///         index 0 unused).
+    /// @dev Converted to USDC and paid at withdrawPendingClaim. The score stays in
+    ///      sumOfTierScores until then (locked model: decrement only at the payment boundary).
+    ///      Writing here is a pure storage write, no external call.
+    mapping(address => uint256[4]) public pendingScoreByTier;
+
+    /// @notice USDC debt owed to an address from a claim/withdraw whose Aave withdraw only
+    ///         partially filled. Already USDC-denominated, paid directly (no conversion).
+    mapping(address => uint256) public pendingUsdc;
 
     /// @notice Sum of accumulatedScore across active positions in a given tier (WAD scale).
     /// @dev Decremented (clamped) on burn; the increment side lands with the swap-path
@@ -316,10 +323,11 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
     /// @notice Authoritative reconciliation point for identity. Not gas-capped, kept minimal.
     /// @dev Reads identity and position state from the canonical PositionManager, then either
     ///      cold-inits a fresh streak or, on a re-subscribe under a DIFFERENT owner, finalizes
-    ///      the prior owner's accrued score into pendingClaim BEFORE resetting for the new
-    ///      owner (order is load-bearing: resetting first would discard the old score).
-    ///      No external state-changing calls (no Aave); pendingClaim is a pure storage write.
-    ///      No loops. Bounded work.
+    ///      the prior owner's accrued score into their tier-indexed pending entitlement BEFORE
+    ///      resetting for the new owner (order is load-bearing: resetting first would discard
+    ///      the old score). No external state-changing calls (no Aave), no share math, no
+    ///      sumOfTierScores decrement here (locked model: the score stays in the live
+    ///      denominator until paid at withdrawPendingClaim). No loops. Bounded work.
     function notifySubscribe(uint256 tokenId, bytes memory /*data*/) external onlyByPosm {
         // Authoritative identity and position state from the canonical PositionManager.
         address owner = IERC721(address(positionManager)).ownerOf(tokenId);
@@ -336,12 +344,19 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
         PositionStreak storage s = streaks[tokenId];
 
         if (s.isActive && s.owner != owner) {
-            // Re-subscribe under a NEW owner. Finalize the prior owner's accrued score
-            // into pendingClaim FIRST, so it is never lost, then reset for the new owner.
-            pendingClaim[s.owner] += s.accumulatedScore;
+            // Re-subscribe under a NEW owner. Finalize the prior owner's accrued score into
+            // their tier-indexed pending entitlement FIRST, so it is never lost, then reset the
+            // streak for the new owner. Only tiered score is finalized: a NONE-tier position
+            // never entered sumOfTierScores, so it has no claimable share to preserve (locked
+            // model: only what is in the denominator is finalizable). No decrement here.
+            if (s.currentTier != TIER_NONE) {
+                pendingScoreByTier[s.owner][s.currentTier] += s.accumulatedScore;
+            }
 
             s.owner = owner;
             s.accumulatedScore = 0;
+            s.currentTier = TIER_NONE;
+            s.nftTokenId = 0;
             s.liquidity = liq;
             s.lastGlobalScoreSnapshot = globalScorePerLiquidity[pid];
             s.firstActiveBlock = block.number;
@@ -468,8 +483,8 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
     /// @inheritdoc ISubscriber
     /// @notice Best-effort frozen flag on unsubscribe. PositionManager gas-caps this call
     ///         and swallows its result in a try/catch, so correctness MUST NOT depend on it
-    ///         executing. The authoritative reconciliation is notifySubscribe, which
-    ///         finalizes any prior owner's accrued score into pendingClaim on re-subscribe.
+    ///         executing. The authoritative reconciliation is notifySubscribe, which finalizes
+    ///         any prior owner's accrued score into their pending entitlement on re-subscribe.
     /// @dev Absolute minimum: a single storage write. No isActive change, no settle, no tier
     ///      accounting, no IL, no external call, no require, no loop.
     function notifyUnsubscribe(uint256 tokenId) external onlyByPosm {
@@ -564,11 +579,11 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
 
         // 5) INTERACTIONS: withdraw from Aave. The router try/catches internally, emits
         //    WithdrawFailed with the reason on failure, never reverts, and returns the actual
-        //    filled amount. Any shortfall is recorded to pendingClaim for a later drain.
+        //    filled amount. Any shortfall is recorded to pendingUsdc for a later drain.
         uint256 actualPaid = yieldRouter.withdrawFromAave(totalUsdc);
         if (actualPaid < totalUsdc) {
             unchecked {
-                pendingClaim[msg.sender] += (totalUsdc - actualPaid);
+                pendingUsdc[msg.sender] += (totalUsdc - actualPaid);
             }
         }
 

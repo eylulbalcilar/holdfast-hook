@@ -30,9 +30,15 @@ import {HoldfastNFT} from "../../src/HoldfastNFT.sol";
 import {YieldRouter} from "../../src/YieldRouter.sol";
 import {MockYieldRouter} from "../mocks/MockYieldRouter.sol";
 
-/// @dev Minimal ERC-721 read interface; IPositionManager does not expose ownerOf directly.
+/// @dev Minimal ERC-721 read/transfer interface; IPositionManager does not expose these directly.
 interface IERC721Minimal {
     function ownerOf(uint256 tokenId) external view returns (address);
+    function transferFrom(address from, address to, uint256 tokenId) external;
+}
+
+/// @dev Minimal view of the canonical PositionManager subscriber mapping (INotifier).
+interface IPosmSubscriberView {
+    function subscriber(uint256 tokenId) external view returns (address);
 }
 
 /// @title SubscriberNativeAccrualTest
@@ -68,6 +74,7 @@ contract SubscriberNativeAccrualTest is Test, DeployPermit2 {
     PoolId internal poolId;
 
     address internal lp;
+    address internal lp2;
 
     int24 internal constant TICK_LOWER = -600;
     int24 internal constant TICK_UPPER = 600;
@@ -132,18 +139,24 @@ contract SubscriberNativeAccrualTest is Test, DeployPermit2 {
         poolId = poolKey.toId();
         manager.initialize(poolKey, Constants.SQRT_PRICE_1_1);
 
-        // LP: fund and wire the two-step Permit2 -> PositionManager approval.
+        // Two LPs, each funded and wired through the two-step Permit2 -> PositionManager approval.
         lp = makeAddr("lp");
-        token0.mint(lp, 1e24);
-        token1.mint(lp, 1e24);
-        vm.startPrank(lp);
+        lp2 = makeAddr("lp2");
+        _fundAndApproveLp(lp);
+        _fundAndApproveLp(lp2);
+
+        vm.roll(1);
+    }
+
+    function _fundAndApproveLp(address who) internal {
+        token0.mint(who, 1e24);
+        token1.mint(who, 1e24);
+        vm.startPrank(who);
         token0.approve(address(permit2), type(uint256).max);
         token1.approve(address(permit2), type(uint256).max);
         permit2.approve(address(token0), address(posm), type(uint160).max, type(uint48).max);
         permit2.approve(address(token1), address(posm), type(uint160).max, type(uint48).max);
         vm.stopPrank();
-
-        vm.roll(1);
     }
 
     /// @dev Deploys the canonical PositionManager. tokenDescriptor and weth9 are address(0):
@@ -246,5 +259,106 @@ contract SubscriberNativeAccrualTest is Test, DeployPermit2 {
         bytes memory unlockData = abi.encode(actions, params);
         vm.prank(owner_);
         posm.modifyLiquidities(unlockData, block.timestamp + 1);
+    }
+
+    function _subscribeAs(address owner_, uint256 tokenId) internal {
+        vm.prank(owner_);
+        posm.subscribe(tokenId, address(hook), "");
+    }
+
+    /// @dev Transfers the posm position ERC-721. PositionManager.transferFrom auto-unsubscribes
+    ///      a subscribed position (its override calls _unsubscribe), so no manual unsubscribe.
+    function _transferPosition(address from, address to, uint256 tokenId) internal {
+        vm.prank(from);
+        IERC721Minimal(address(posm)).transferFrom(from, to, tokenId);
+    }
+
+    /// @notice Anti-theft core (V2 thesis). A transferred position auto-unsubscribes; re-subscribing
+    ///         under a new owner finalizes the prior owner's accrued score into their tier-indexed
+    ///         pending entitlement and resets the streak for the new owner. The new owner cannot
+    ///         reach the prior owner's finalized balance.
+    function test_ownerChangeViaTransfer_antiTheft() public {
+        // LP1 mints, subscribes, accrues over the churn, and settles via the subscriber path.
+        uint256 tokenId = posm.nextTokenId();
+        _mintPosition(lp, LIQ);
+        _subscribeAs(lp, tokenId);
+        uint160 entryAtMint = hook.getStreak(tokenId).entrySqrtPriceX96;
+
+        _churn();
+        vm.roll(block.number + BRONZE_BLOCKS + 1);
+        _swap(-int256(2e16), true);
+        _increaseLiquidity(lp, tokenId, 1e12);
+
+        uint256 scoreBeforeTransfer = hook.getStreak(tokenId).accumulatedScore;
+        uint8 tierBefore = hook.getStreak(tokenId).currentTier;
+        assertGt(scoreBeforeTransfer, 0, "LP1 must have accrued score before transfer");
+        assertGt(tierBefore, 0, "LP1 must have reached a tier before transfer");
+        assertEq(hook.getStreak(tokenId).owner, lp, "owner is LP1 before transfer");
+
+        // LP1 transfers the posm position NFT to LP2. PositionManager auto-unsubscribes.
+        _transferPosition(lp, lp2, tokenId);
+        assertEq(IERC721Minimal(address(posm)).ownerOf(tokenId), lp2, "LP2 now owns the position");
+        assertEq(
+            IPosmSubscriberView(address(posm)).subscriber(tokenId),
+            address(0),
+            "transfer must auto-unsubscribe the position"
+        );
+
+        // LP2 re-subscribes; notifySubscribe takes the owner-change branch.
+        _subscribeAs(lp2, tokenId);
+
+        // Prior owner's score finalized into LP1's tier-indexed pending entitlement; streak reset.
+        assertEq(
+            hook.pendingScoreByTier(lp, tierBefore),
+            scoreBeforeTransfer,
+            "LP1's accrued score finalized into pendingScoreByTier[LP1][tier]"
+        );
+        assertEq(hook.getStreak(tokenId).owner, lp2, "streak owner reset to LP2");
+        assertEq(hook.getStreak(tokenId).accumulatedScore, 0, "streak score reset for LP2");
+        assertEq(hook.getStreak(tokenId).currentTier, 0, "streak tier reset for LP2");
+        assertEq(hook.getStreak(tokenId).nftTokenId, 0, "streak badge ref reset for LP2");
+        assertTrue(
+            hook.getStreak(tokenId).entrySqrtPriceX96 != entryAtMint,
+            "fresh IL baseline re-read at re-subscribe (price moved since mint)"
+        );
+
+        // Anti-theft: LP2 has no pending balance of its own, and LP2 claiming cannot drain
+        // LP1's pending. pendingScoreByTier is keyed by address, so LP1's amount is segregated.
+        assertEq(hook.pendingScoreByTier(lp2, tierBefore), 0, "LP2 has no pending balance");
+        vm.prank(lp2);
+        hook.claim(tokenId);
+        assertEq(
+            hook.pendingScoreByTier(lp, tierBefore), scoreBeforeTransfer, "LP2 claim cannot drain LP1's pending"
+        );
+        assertEq(hook.pendingScoreByTier(lp2, tierBefore), 0, "LP2 still has no pending after claiming");
+    }
+
+    /// @notice Multi-LP isolation. Two positions in the same pool accrue independently, each keyed by
+    ///         its own tokenId; settling one does not bleed into the other.
+    function test_multiLpIsolation() public {
+        uint256 tokenId1 = posm.nextTokenId();
+        _mintPosition(lp, LIQ);
+        _subscribeAs(lp, tokenId1);
+
+        uint256 tokenId2 = posm.nextTokenId();
+        _mintPosition(lp2, LIQ);
+        _subscribeAs(lp2, tokenId2);
+        assertTrue(tokenId1 != tokenId2, "distinct tokenIds");
+
+        // Shared swap churn drives the pool-level accumulator for both positions.
+        _churn();
+        vm.roll(block.number + BRONZE_BLOCKS + 1);
+        _swap(-int256(2e16), true);
+
+        // Settle LP1 only. Its score moves; LP2's stays unsettled (no bleed).
+        _increaseLiquidity(lp, tokenId1, 1e12);
+        uint256 score1 = hook.getStreak(tokenId1).accumulatedScore;
+        assertGt(score1, 0, "LP1 accrued under tokenId1");
+        assertEq(hook.getStreak(tokenId2).accumulatedScore, 0, "settling LP1 must not bleed into LP2");
+
+        // Settle LP2. Its score moves; LP1's stays exactly where it was.
+        _increaseLiquidity(lp2, tokenId2, 1e12);
+        assertGt(hook.getStreak(tokenId2).accumulatedScore, 0, "LP2 accrued under tokenId2");
+        assertEq(hook.getStreak(tokenId1).accumulatedScore, score1, "LP2 settle must not change LP1's score");
     }
 }

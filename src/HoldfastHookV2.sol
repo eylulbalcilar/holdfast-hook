@@ -150,11 +150,22 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
     ///         claim arm.
     uint256 public sumOfAbsoluteIL;
 
+    /// @notice Per-tokenId subscription epoch, incremented on every owner change. The badge
+    ///         mint key is derived from (tokenId, badgeEpoch), so each owner-tenure gets a
+    ///         distinct, never-colliding badge key (robust even to round-trip transfers).
+    mapping(uint256 tokenId => uint256) public badgeEpoch;
+
     /// @notice The canonical Uniswap v4 PositionManager this hook subscribes to.
     /// @dev Sole authorized caller of the ISubscriber notification surface (onlyByPosm).
     IPositionManager public immutable positionManager;
 
     /// @notice Tier badge NFT. Bound at construction.
+    /// @dev KNOWN V2 LIMITATION (intended): HoldfastNFT badges are non-transferable in V2.
+    ///      HoldfastNFT._update calls settleOnTransfer on non-mint transfers, which this hook
+    ///      does not implement, so transferring a badge reverts. This is by design: the badge
+    ///      is a passive tenure record; the transferable asset is the PositionManager position
+    ///      NFT, not the badge (PositionManager handles unsubscribe on position transfer).
+    ///      See DESIGN.md V2 Roadmap.
     HoldfastNFT public immutable nft;
 
     /// @notice Aave V3 supply/withdraw adapter holding the bonus pool.
@@ -355,6 +366,11 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
             if (s.currentTier != TIER_NONE) {
                 pendingScoreByTier[s.owner][s.currentTier] += s.accumulatedScore;
             }
+
+            // Advance the subscription epoch so the new owner's badge mints under a fresh key
+            // (keccak(tokenId, badgeEpoch)), never colliding with the prior owner's badge. One
+            // SSTORE, storage-only, never-revert-safe.
+            badgeEpoch[tokenId] += 1;
 
             s.owner = owner;
             s.accumulatedScore = 0;
@@ -689,8 +705,11 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
 
         if (s.currentTier == TIER_NONE) {
             // First badge: mint at Bronze, then upgrade in the same call if the position
-            // already clears a higher tier. The posm tokenId is the NFT position key.
-            try nft.mint(s.owner, bytes32(tokenId)) returns (uint256 badgeId) {
+            // already clears a higher tier. The mint key is (tokenId, badgeEpoch), so each
+            // owner-tenure gets a distinct key and a new owner after a transfer is never blocked
+            // by the prior owner's badge. Upgrades below use the returned badge id, not this key.
+            bytes32 badgeKey = keccak256(abi.encode(tokenId, badgeEpoch[tokenId]));
+            try nft.mint(s.owner, badgeKey) returns (uint256 badgeId) {
                 s.nftTokenId = badgeId;
                 s.currentTier = TIER_BRONZE;
                 // Bucket maintenance: the position enters its first tier with its full score.

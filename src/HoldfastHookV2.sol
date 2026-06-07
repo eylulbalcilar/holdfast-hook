@@ -180,6 +180,9 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
         uint256 actualPaidUsdc
     );
 
+    /// @notice Emitted when an address drains its pending entitlement + USDC debt.
+    event PendingClaimed(address indexed claimer, uint256 totalUsdc, uint256 actualPaidUsdc);
+
     /// @notice Restricts the ISubscriber notification surface to the bound PositionManager.
     /// @dev Distinct from BaseHook's `onlyPoolManager` (which checks address(poolManager)).
     ///      positionManager != poolManager, so the two guards never authorize the same call.
@@ -594,6 +597,76 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
 
         // 7) Claimed.
         emit Claimed(tokenId, msg.sender, tierShareWad, ilShareWad, totalUsdc, actualPaid);
+    }
+
+    /// @notice Drain the caller's pending entitlement: the tier-indexed score finalized from a
+    ///         transferred-away position (converted to its tier share now), plus any USDC debt
+    ///         from a prior partial Aave fill. Runs in the caller's own frame, so external calls
+    ///         and reverts are allowed (unlike the notify handlers).
+    /// @dev Mirrors claim 8b: tier-arm share math in WAD against the LIVE sumOfTierScores, one
+    ///      WAD->USDC boundary conversion, CEI ordering, Aave withdraw with partial-fill
+    ///      fallback. The score stays in sumOfTierScores until paid here (locked model), so the
+    ///      decrement happens at this payment boundary.
+    function withdrawPendingClaim() external nonReentrant {
+        // Bonus pool in WAD, same basis as claim 8b.
+        uint256 bonusPoolWad = IERC20(yieldRouter.aUsdc()).balanceOf(address(yieldRouter)) * USDC_TO_WAD;
+        uint256 usdcDebt = pendingUsdc[msg.sender];
+
+        // Pass 1 (reads only): tier-arm WAD share for each pending tier, against the LIVE
+        // denominator. Only meaningful when the pool is non-empty; otherwise the tier pending
+        // is left untouched and stays claimable once the pool refills.
+        uint256 tierShareWad = 0;
+        if (bonusPoolWad > 0) {
+            for (uint8 t = TIER_BRONZE; t <= TIER_GOLD; t++) {
+                uint256 score = pendingScoreByTier[msg.sender][t];
+                if (score == 0) continue;
+                uint256 denom = sumOfTierScores[t];
+                if (denom == 0) continue; // nothing to pro-rata against; leave pending for retry
+                uint256 allocBps =
+                    t == TIER_GOLD ? GOLD_ALLOC_BPS : (t == TIER_SILVER ? SILVER_ALLOC_BPS : BRONZE_ALLOC_BPS);
+                tierShareWad += (bonusPoolWad * TIER_ARM_BPS * allocBps * score) / (BPS_DENOM * BPS_DENOM * denom);
+            }
+        }
+
+        // Convert the tier-arm WAD sum to USDC once, then add the already-USDC debt (not run
+        // through the conversion). Truncates down, protocol's favor.
+        uint256 totalUsdc = (tierShareWad * 1e6 / 1e18) + usdcDebt;
+
+        // Nothing payable: return before any external call (the router rejects a zero withdraw)
+        // and without consuming any pending state.
+        if (totalUsdc == 0) {
+            emit PendingClaimed(msg.sender, 0, 0);
+            return;
+        }
+
+        // EFFECTS before INTERACTIONS. Consume the tier pendings that contributed (same guards
+        // as pass 1) and decrement the live denominator; zero the USDC debt.
+        if (bonusPoolWad > 0) {
+            for (uint8 t = TIER_BRONZE; t <= TIER_GOLD; t++) {
+                uint256 score = pendingScoreByTier[msg.sender][t];
+                if (score == 0) continue;
+                uint256 denom = sumOfTierScores[t];
+                if (denom == 0) continue;
+                sumOfTierScores[t] = denom >= score ? denom - score : 0;
+                pendingScoreByTier[msg.sender][t] = 0;
+            }
+        }
+        pendingUsdc[msg.sender] = 0;
+
+        // INTERACTIONS: withdraw from Aave (router try/catches internally, never reverts) and
+        // pay. On a partial fill, re-credit the unpaid USDC to pendingUsdc (already converted,
+        // so it goes back as a USDC debt, never to pendingScoreByTier).
+        uint256 actualPaid = yieldRouter.withdrawFromAave(totalUsdc);
+        if (actualPaid < totalUsdc) {
+            unchecked {
+                pendingUsdc[msg.sender] += (totalUsdc - actualPaid);
+            }
+        }
+        if (actualPaid > 0) {
+            require(IERC20(usdc).transfer(msg.sender, actualPaid), "HoldfastHookV2: usdc transfer failed");
+        }
+
+        emit PendingClaimed(msg.sender, totalUsdc, actualPaid);
     }
 
     // ---------------------------------------------------------------------

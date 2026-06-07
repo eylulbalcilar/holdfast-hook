@@ -59,6 +59,13 @@ contract DemoSeedV2 is Script {
         uint256 nSwaps = vm.envOr("N_SWAPS", uint256(8));
         uint256 swapAmt = vm.envOr("SWAP_AMT", uint256(2e5)); // 0.2 USDC per swap (shallow pool)
         bool doInit = vm.envOr("INIT_POOL", true);
+        // Blocks to advance between swaps. The score gauge is per-block, so a single-block
+        // simulation accrues nothing; set ROLL_BLOCKS > 0 to demonstrate accrual in a dry-run.
+        // Leave 0 for a real broadcast, where sequential txs already span real blocks.
+        uint256 rollBlocks = vm.envOr("ROLL_BLOCKS", uint256(0));
+        // Whether to run the settling liquidity decrease. Set false to stop after the swap churn
+        // (e.g. a first seeding phase) and settle in a later run once block tenure has accrued.
+        bool doSettle = vm.envOr("DO_SETTLE", true);
 
         _usdc = BaseSepoliaAddresses.USDC;
         _weth = BaseSepoliaAddresses.WETH;
@@ -101,15 +108,19 @@ contract DemoSeedV2 is Script {
         // Swap churn drives globalScorePerLiquidity via afterSwap.
         IERC20(_usdc).approve(address(_swapRouter), type(uint256).max);
         IERC20(_weth).approve(address(_swapRouter), type(uint256).max);
-        _runSwaps(nSwaps, swapAmt);
+        _runSwaps(nSwaps, swapAmt, rollBlocks);
 
         // Tiny liquidity decrease fires notifyModifyLiquidity -> _settleScore, moving the score off
         // zero. A decrease (not an increase) is used so it needs no leftover token balance after the
         // swaps; it only returns dust via CLOSE_CURRENCY.
-        uint256 settleLiq = vm.envOr("SETTLE_LIQ", uint256(_mintedLiq / 1000));
-        if (settleLiq == 0) settleLiq = 1;
-        _settle(tokenId, settleLiq);
-        console2.log("Settled via tiny liquidity decrease");
+        if (doSettle) {
+            uint256 settleLiq = vm.envOr("SETTLE_LIQ", uint256(_mintedLiq / 1000));
+            if (settleLiq == 0) settleLiq = 1;
+            _settle(tokenId, settleLiq);
+            console2.log("Settled via tiny liquidity decrease");
+        } else {
+            console2.log("Settle skipped (DO_SETTLE=false)");
+        }
 
         vm.stopBroadcast();
 
@@ -165,8 +176,11 @@ contract DemoSeedV2 is Script {
     ///      scarce WETH, and a single SWAP_AMT is well-defined (no 6/18 decimal mismatch). They
     ///      drift the price toward the upper tick; with enough pool depth the position stays in
     ///      range across the churn, which is what drives globalScorePerLiquidity in afterSwap.
-    function _runSwaps(uint256 n, uint256 swapAmt) internal {
+    function _runSwaps(uint256 n, uint256 swapAmt, uint256 rollBlocks) internal {
         for (uint256 i = 0; i < n; i++) {
+            // Advance blocks before each swap so the per-block gauge accrues in a dry-run; on a
+            // real broadcast rollBlocks is 0 and real block progression does the work.
+            if (rollBlocks > 0) vm.roll(block.number + rollBlocks);
             _swapRouter.swap(
                 _key,
                 SwapParams({

@@ -28,7 +28,7 @@ import {Actions} from "v4-periphery/libraries/Actions.sol";
 import {HoldfastHookV2} from "../../src/HoldfastHookV2.sol";
 import {HoldfastNFT} from "../../src/HoldfastNFT.sol";
 import {YieldRouter} from "../../src/YieldRouter.sol";
-import {MockYieldRouter} from "../mocks/MockYieldRouter.sol";
+import {FundedMockYieldRouter} from "../mocks/FundedMockYieldRouter.sol";
 
 /// @dev Minimal ERC-721 read/transfer interface; IPositionManager does not expose these directly.
 interface IERC721Minimal {
@@ -68,7 +68,7 @@ contract SubscriberNativeAccrualTest is Test, DeployPermit2 {
 
     HoldfastHookV2 internal hook;
     HoldfastNFT internal nft;
-    MockYieldRouter internal mockRouter;
+    FundedMockYieldRouter internal mockRouter;
 
     PoolKey internal poolKey;
     PoolId internal poolId;
@@ -82,8 +82,11 @@ contract SubscriberNativeAccrualTest is Test, DeployPermit2 {
     int24 internal constant TICK_SPACING = 60;
     uint256 internal constant LIQ = 1e18;
 
-    // Mirrors HoldfastHook.BRONZE_BLOCKS (1_000): minimum active tenure for Bronze.
+    // Mirrors HoldfastHookV2.BRONZE_BLOCKS (1_000): minimum active tenure for Bronze.
     uint256 internal constant BRONZE_BLOCKS = 1_000;
+
+    // Bonus pool seeded into the funded yield-router mock so the payout path is observable.
+    uint256 internal constant BONUS_POOL = 1e24;
 
     function setUp() public {
         permit2 = IAllowanceTransfer(deployPermit2());
@@ -105,7 +108,9 @@ contract SubscriberNativeAccrualTest is Test, DeployPermit2 {
         token1.approve(address(swapRouter), type(uint256).max);
 
         nft = new HoldfastNFT(address(this));
-        mockRouter = new MockYieldRouter();
+        // Funded yield-router mock: holds USDC (token0) so the claim/withdraw payout is observable.
+        mockRouter = new FundedMockYieldRouter(address(token0));
+        token0.mint(address(mockRouter), BONUS_POOL);
 
         // Deploy the canonical Uniswap v4 PositionManager locally (same contract code as Base
         // Sepolia 0x4b2c77d209d3405f41a037ec6c77f7f5b8e2ca80). The hook takes its address at
@@ -360,5 +365,111 @@ contract SubscriberNativeAccrualTest is Test, DeployPermit2 {
         _increaseLiquidity(lp2, tokenId2, 1e12);
         assertGt(hook.getStreak(tokenId2).accumulatedScore, 0, "LP2 accrued under tokenId2");
         assertEq(hook.getStreak(tokenId1).accumulatedScore, score1, "LP2 settle must not change LP1's score");
+    }
+
+    /// @dev Drive a subscribed position through swap churn + block advancement past the Bronze
+    ///      tenure floor + a settle, so it reaches at least Bronze (score and tenure).
+    function _accrueAndSettleToTier(address owner_, uint256 tokenId) internal {
+        _churn();
+        vm.roll(block.number + BRONZE_BLOCKS + 1);
+        _swap(-int256(2e16), true);
+        _increaseLiquidity(owner_, tokenId, 1e12);
+    }
+
+    /// @notice End-to-end owner change proving the four anti-theft fixes together: a transferred
+    ///         position parks the prior owner's tiered score, the new owner is no longer
+    ///         tier-blocked (per-subscription-epoch badge key), the parked entitlement is
+    ///         drainable for real USDC against the live denominator, and it is segregated from
+    ///         the new owner.
+    function test_ownerChangeEndToEnd_allFixes() public {
+        // 1. LP1 mints, subscribes, accrues, settles, reaches a tier with a badge.
+        uint256 tokenId = posm.nextTokenId();
+        _mintPosition(lp, LIQ);
+        _subscribeAs(lp, tokenId);
+        _accrueAndSettleToTier(lp, tokenId);
+
+        uint8 tier = hook.getStreak(tokenId).currentTier;
+        uint256 s1 = hook.getStreak(tokenId).accumulatedScore;
+        uint256 badge1 = hook.getStreak(tokenId).nftTokenId;
+        assertGe(tier, 1, "LP1 reached at least Bronze");
+        assertGt(s1, 0, "LP1 has score");
+        assertTrue(badge1 != 0, "LP1 badge minted");
+        assertEq(nft.ownerOf(badge1), lp, "LP1 owns its badge");
+
+        // 2. LP1 transfers the position to LP2 (real transfer, auto-unsubscribe). The finalize is
+        //    deferred to the re-subscribe (notifySubscribe is the authoritative reconciliation
+        //    point); transfer alone only fires the best-effort notifyUnsubscribe, so nothing is
+        //    parked yet and the streak still belongs to LP1 at this instant.
+        _transferPosition(lp, lp2, tokenId);
+        assertEq(hook.pendingScoreByTier(lp, tier), 0, "parking deferred until re-subscribe");
+        assertEq(hook.getStreak(tokenId).owner, lp, "streak still owned by LP1 until re-subscribe");
+
+        // 3. LP2 re-subscribes: the owner-change finalize parks LP1's tiered score and resets the
+        //    streak for LP2.
+        _subscribeAs(lp2, tokenId);
+        assertEq(hook.pendingScoreByTier(lp, tier), s1, "LP1 score parked in pending");
+        assertEq(hook.getStreak(tokenId).currentTier, 0, "streak tier reset");
+        assertEq(hook.getStreak(tokenId).nftTokenId, 0, "streak badge ref reset");
+        assertEq(hook.getStreak(tokenId).owner, lp2, "streak owner is LP2");
+
+        // 4. LP2 accrues, settles, and NOW reaches a tier with a NEW badge (proves the new owner
+        //    is not permanently tier-blocked).
+        _accrueAndSettleToTier(lp2, tokenId);
+
+        uint256 badge2 = hook.getStreak(tokenId).nftTokenId;
+        assertGe(hook.getStreak(tokenId).currentTier, 1, "LP2 reached at least Bronze after transfer");
+        assertTrue(badge2 != 0, "LP2 badge minted");
+        assertTrue(badge2 != badge1, "LP2 badge id differs from LP1 badge");
+        assertEq(nft.ownerOf(badge2), lp2, "LP2 owns its badge");
+
+        // 5. LP1 drains the parked entitlement for real USDC against the live denominator.
+        uint256 pendingS1 = hook.pendingScoreByTier(lp, tier);
+        assertEq(pendingS1, s1, "LP1 pending still parked before withdraw");
+        uint256 sumBefore = hook.sumOfTierScores(tier);
+        uint256 lp1BalBefore = token0.balanceOf(lp);
+
+        vm.prank(lp);
+        hook.withdrawPendingClaim();
+
+        assertGt(token0.balanceOf(lp), lp1BalBefore, "LP1 received USDC from the parked entitlement");
+        assertEq(hook.pendingScoreByTier(lp, tier), 0, "LP1 pending zeroed after withdraw");
+        assertEq(hook.sumOfTierScores(tier), sumBefore - pendingS1, "denominator decremented by LP1 score");
+
+        // 6. LP2 draining pending gets nothing of LP1's (segregation by address).
+        uint256 lp2BalBefore = token0.balanceOf(lp2);
+        vm.prank(lp2);
+        hook.withdrawPendingClaim();
+        assertEq(token0.balanceOf(lp2), lp2BalBefore, "LP2 gets nothing from pending");
+        assertEq(hook.pendingScoreByTier(lp, tier), 0, "LP1 pending remains zero after LP2 attempt");
+    }
+
+    /// @notice Round-trip transfer A->B->A. A returning owner reaches a tier again and receives a
+    ///         FRESH badge, proving the per-subscription-epoch key handles round-trips (the hole a
+    ///         per-owner key would leave: the returning owner re-colliding with their old badge).
+    function test_roundTripTransfer_freshBadgeOnReturn() public {
+        uint256 tokenId = posm.nextTokenId();
+        _mintPosition(lp, LIQ);
+        _subscribeAs(lp, tokenId);
+        _accrueAndSettleToTier(lp, tokenId);
+        uint256 badge1 = hook.getStreak(tokenId).nftTokenId;
+        assertTrue(badge1 != 0, "LP1 first badge minted");
+
+        // A -> B
+        _transferPosition(lp, lp2, tokenId);
+        _subscribeAs(lp2, tokenId);
+        _accrueAndSettleToTier(lp2, tokenId);
+        uint256 badge2 = hook.getStreak(tokenId).nftTokenId;
+        assertTrue(badge2 != 0 && badge2 != badge1, "LP2 fresh badge after first transfer");
+
+        // B -> A (round-trip back to the original owner)
+        _transferPosition(lp2, lp, tokenId);
+        _subscribeAs(lp, tokenId);
+        _accrueAndSettleToTier(lp, tokenId);
+        uint256 badge3 = hook.getStreak(tokenId).nftTokenId;
+
+        assertGe(hook.getStreak(tokenId).currentTier, 1, "returning LP1 reaches a tier again");
+        assertTrue(badge3 != 0, "returning LP1 gets a badge");
+        assertTrue(badge3 != badge1 && badge3 != badge2, "returning LP1's badge is fresh, not a re-collision");
+        assertEq(nft.ownerOf(badge3), lp, "returning LP1 owns the fresh badge");
     }
 }

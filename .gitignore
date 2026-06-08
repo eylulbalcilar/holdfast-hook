@@ -35,3 +35,4 @@ frontend/deployments/*
 *-log.txt
 deploy-log.txt
 apply_*.py
+apply_step*.py

@@ -1,4 +1,4 @@
-import { createPublicClient, createWalletClient, custom, http, defineChain, formatUnits } from "https://esm.sh/viem@2.x";
+import { createPublicClient, createWalletClient, custom, http, defineChain, formatUnits, parseUnits } from "https://esm.sh/viem@2.x";
 import { CURRENT, TIERS } from "./config.js";
 
 function getMetaMaskProvider() {
@@ -190,6 +190,112 @@ async function claimRewards(tokenId) {
     setTxStatus("error", err.shortMessage ?? err.message);
   }
 }
+
+const POOL_SWAP_TEST_ABI = [
+  {
+    type: "function",
+    name: "swap",
+    stateMutability: "payable",
+    inputs: [
+      { name: "key", type: "tuple", components: [
+        { name: "currency0", type: "address" },
+        { name: "currency1", type: "address" },
+        { name: "fee", type: "uint24" },
+        { name: "tickSpacing", type: "int24" },
+        { name: "hooks", type: "address" },
+      ]},
+      { name: "params", type: "tuple", components: [
+        { name: "zeroForOne", type: "bool" },
+        { name: "amountSpecified", type: "int256" },
+        { name: "sqrtPriceLimitX96", type: "uint160" },
+      ]},
+      { name: "testSettings", type: "tuple", components: [
+        { name: "takeClaims", type: "bool" },
+        { name: "settleUsingBurn", type: "bool" },
+      ]},
+      { name: "hookData", type: "bytes" },
+    ],
+    outputs: [{ name: "delta", type: "int256" }],
+  },
+];
+
+const erc20ApproveAbi = [
+  { type: "function", name: "approve", stateMutability: "nonpayable",
+    inputs: [{ name: "spender", type: "address" }, { name: "amount", type: "uint256" }],
+    outputs: [{ name: "", type: "bool" }] },
+  { type: "function", name: "allowance", stateMutability: "view",
+    inputs: [{ name: "owner", type: "address" }, { name: "spender", type: "address" }],
+    outputs: [{ name: "", type: "uint256" }] },
+];
+
+const MAX_SQRT_PRICE_LIMIT = 1461446703485210103287273052203988822378723970341n; // MAX_SQRT_PRICE - 1
+
+function buildPoolKey() {
+  const usdc = deployment.usdc.toLowerCase();
+  const weth = CURRENT.addresses.weth.toLowerCase();
+  const [c0, c1] = usdc < weth ? [deployment.usdc, CURRENT.addresses.weth] : [CURRENT.addresses.weth, deployment.usdc];
+  return {
+    currency0: c0,
+    currency1: c1,
+    fee: 3000,
+    tickSpacing: 60,
+    hooks: deployment.holdfastHook,
+  };
+}
+
+async function runSwap() {
+  if (!walletClient || !account) {
+    setTxStatus("error", "Wallet not connected");
+    return;
+  }
+  const swapRouter = CURRENT.addresses.poolSwapTest;
+  const usdc = deployment.usdc;
+  const amount = parseUnits("0.2", 6); // 0.2 USDC
+
+  try {
+    setTxStatus("pending", "checking USDC allowance");
+    const allowance = await publicClient.readContract({
+      address: usdc, abi: erc20ApproveAbi, functionName: "allowance", args: [account, swapRouter],
+    });
+
+    if (allowance < amount) {
+      setTxStatus("pending", "approving USDC for swap router");
+      const approveHash = await walletClient.writeContract({
+        account, address: usdc, abi: erc20ApproveAbi, functionName: "approve",
+        args: [swapRouter, parseUnits("1000000", 6)],
+      });
+      await publicClient.waitForTransactionReceipt({ hash: approveHash });
+    }
+
+    setTxStatus("pending", "swapping 0.2 USDC");
+    const key = buildPoolKey();
+    const params = {
+      zeroForOne: false,
+      amountSpecified: -amount,
+      sqrtPriceLimitX96: MAX_SQRT_PRICE_LIMIT,
+    };
+    const testSettings = { takeClaims: false, settleUsingBurn: false };
+
+    const hash = await walletClient.writeContract({
+      account, address: swapRouter, abi: POOL_SWAP_TEST_ABI, functionName: "swap",
+      args: [key, params, testSettings, "0x"],
+    });
+    setTxStatus("pending", `swap tx ${shorten(hash)}, waiting`);
+    const receipt = await publicClient.waitForTransactionReceipt({ hash });
+    if (receipt.status === "success") {
+      setTxStatus("success", `swap tx ${shorten(hash)}`);
+      await refreshAll();
+    } else {
+      setTxStatus("error", `swap reverted: ${shorten(hash)}`);
+    }
+  } catch (err) {
+    console.error("[holdfast] swap failed:", err);
+    setTxStatus("error", err.shortMessage ?? err.message);
+  }
+}
+
+const swapBtn = document.getElementById("swap-btn");
+if (swapBtn) swapBtn.addEventListener("click", runSwap);
 
 document.addEventListener("click", (e) => {
   if (e.target.classList?.contains("claim-btn")) {

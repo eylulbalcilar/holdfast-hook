@@ -1,4 +1,4 @@
-import { createPublicClient, createWalletClient, custom, http, defineChain, formatUnits, parseAbiItem } from "https://esm.sh/viem@2.x";
+import { createPublicClient, createWalletClient, custom, http, defineChain, formatUnits } from "https://esm.sh/viem@2.x";
 import { CURRENT, TIERS } from "./config.js";
 
 function getMetaMaskProvider() {
@@ -31,8 +31,6 @@ const erc20Abi = [
   { type: "function", name: "decimals", stateMutability: "view", inputs: [], outputs: [{ name: "", type: "uint8" }] },
 ];
 
-const transferEvent = parseAbiItem("event Transfer(address indexed from, address indexed to, uint256 indexed tokenId)");
-
 const $ = (id) => document.getElementById(id);
 const shorten = (addr) => `${addr.slice(0, 6)}...${addr.slice(-4)}`;
 const fmtUsdc = (raw) => Number(formatUnits(raw, 6)).toLocaleString("en-US", { maximumFractionDigits: 2 });
@@ -57,9 +55,8 @@ async function loadDeployment() {
     console.log("[holdfast] deployment loaded:", deployment);
   } catch (err) {
     console.error("[holdfast] deployment fetch failed:", err.message);
-    $("pool-state-body").innerHTML = `<p class="muted">No deployment found for chainId ${chainId}</p>`;
-    $("bonus-pool-body").innerHTML = `<p class="muted">No deployment found</p>`;
-    return false;
+    deployment = CURRENT.addresses;
+    console.log("[holdfast] falling back to config addresses");
   }
 
   const [hookAbi, nftAbi, routerAbi] = await Promise.all([
@@ -143,79 +140,16 @@ async function refreshBonusPool() {
   }
 }
 
-async function findUserTokenIds(userAddress) {
-  // Fast path: if the user holds no NFT there are no positions to render,
-  // so skip the log scan entirely and avoid a slow or hanging getLogs loop.
-  try {
-    const nftBalance = await publicClient.readContract({
-      address: deployment.holdfastNFT, abi: erc20Abi, functionName: "balanceOf", args: [userAddress],
-    });
-    if (nftBalance === 0n) return [];
-  } catch (err) {
-    console.warn("[holdfast] NFT balanceOf failed:", err.shortMessage ?? err.message);
-    return [];
-  }
-  // The user holds at least one NFT. Scan recent Transfer logs in small chunks
-  // to recover the owned token ids (log range caps vary by RPC provider).
-  const currentBlock = await publicClient.getBlockNumber();
-  const CHUNK = 9n;
-  const MAX_LOOKBACK = 100n;
-  const startBlock = currentBlock > MAX_LOOKBACK ? currentBlock - MAX_LOOKBACK : 0n;
-
-  const owned = new Set();
-  const removed = new Set();
-
-  for (let from = startBlock; from <= currentBlock; from += CHUNK + 1n) {
-    const to = from + CHUNK > currentBlock ? currentBlock : from + CHUNK;
-    try {
-      const incoming = await publicClient.getLogs({
-        address: deployment.holdfastNFT,
-        event: transferEvent,
-        args: { to: userAddress },
-        fromBlock: from,
-        toBlock: to,
-      });
-      for (const log of incoming) owned.add(log.args.tokenId);
-
-      const outgoing = await publicClient.getLogs({
-        address: deployment.holdfastNFT,
-        event: transferEvent,
-        args: { from: userAddress },
-        fromBlock: from,
-        toBlock: to,
-      });
-      for (const log of outgoing) removed.add(log.args.tokenId);
-    } catch (err) {
-      console.warn(`[holdfast] getLogs failed at ${from}-${to}:`, err.shortMessage ?? err.message);
-    }
-  }
-
-  for (const id of removed) owned.delete(id);
-
-  const finalOwned = [];
-  for (const tokenId of owned) {
-    try {
-      const currentOwner = await publicClient.readContract({
-        address: deployment.holdfastNFT, abi: abis.nft, functionName: "ownerOf", args: [tokenId],
-      });
-      if (currentOwner.toLowerCase() === userAddress.toLowerCase()) {
-        finalOwned.push(tokenId);
-      }
-    } catch {}
-  }
-  return finalOwned;
-}
-
 function tierProgress(score, blocks, currentTier) {
   if (currentTier >= 3) return { pct: 100, label: "Max tier (Gold)" };
   const next = currentTier === 0 ? TIERS.BRONZE : currentTier === 1 ? TIERS.SILVER : TIERS.GOLD;
   const nextName = currentTier === 0 ? "Bronze" : currentTier === 1 ? "Silver" : "Gold";
-  const scorePct = Math.min(100, Number((score * 100n) / next.score));
-  const blockPct = Math.min(100, Number((blocks * 100n) / next.blocks));
+  const scorePct = next.score > 0n ? Math.min(100, Number((score * 100n) / next.score)) : 0;
+  const blockPct = next.blocks > 0n ? Math.min(100, Number((blocks * 100n) / next.blocks)) : 0;
   const pct = Math.min(scorePct, blockPct);
   return { pct, label: `${pct}% to ${nextName}` };
 }
-// --- Transaction status ---
+
 function setTxStatus(state, message) {
   const body = $("tx-status-body");
   if (state === "idle") {
@@ -229,34 +163,12 @@ function setTxStatus(state, message) {
   }
 }
 
-// --- Auto-fund (dev only): give the connected account gas on Anvil ---
-async function ensureGasOnAnvil(address) {
-  if (CURRENT.network.chainId !== 31337) return;
-  try {
-    const balance = await publicClient.getBalance({ address });
-    if (balance > 10n ** 17n) return; // already has >0.1 ETH
-    await fetch(CURRENT.network.rpcUrl, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({
-        jsonrpc: "2.0", id: 1, method: "anvil_setBalance",
-        params: [address, "0x8AC7230489E80000"], // 10 ETH
-      }),
-    });
-    console.log("[holdfast] funded", address, "with 10 ETH on Anvil");
-  } catch (err) {
-    console.warn("[holdfast] auto-fund failed:", err.message);
-  }
-}
-
-// --- Claim rewards ---
 async function claimRewards(tokenId) {
   if (!walletClient || !account) {
     setTxStatus("error", "Wallet not connected");
     return;
   }
   setTxStatus("pending", `claim(${tokenId})`);
-
   try {
     const hash = await walletClient.writeContract({
       account,
@@ -266,7 +178,6 @@ async function claimRewards(tokenId) {
       args: [BigInt(tokenId)],
     });
     setTxStatus("pending", `tx ${shorten(hash)}, waiting for receipt`);
-
     const receipt = await publicClient.waitForTransactionReceipt({ hash });
     if (receipt.status === "success") {
       setTxStatus("success", `tx ${shorten(hash)}`);
@@ -280,7 +191,6 @@ async function claimRewards(tokenId) {
   }
 }
 
-// --- Claim button delegation ---
 document.addEventListener("click", (e) => {
   if (e.target.classList?.contains("claim-btn")) {
     const tokenId = e.target.dataset.tokenId;
@@ -295,77 +205,63 @@ async function renderPositions(userAddress) {
   }
   $("positions-body").innerHTML = `<p class="muted">Loading positions...</p>`;
 
-  let tokenIds = [];
+  const tokenIdStr = CURRENT.addresses.demoTokenId;
+  if (!tokenIdStr) {
+    $("positions-body").innerHTML = `<p class="muted">No positions configured.</p>`;
+    return;
+  }
+  const tokenId = BigInt(tokenIdStr);
+
+  let streak;
   try {
-    tokenIds = await findUserTokenIds(userAddress);
+    streak = await publicClient.readContract({
+      address: deployment.holdfastHook, abi: abis.hook, functionName: "getStreak", args: [tokenId],
+    });
   } catch (err) {
-    $("positions-body").innerHTML = `<p class="muted">Could not load positions: ${err.shortMessage ?? err.message}</p>`;
-    return;
-  }
-  if (tokenIds.length === 0) {
-    $("positions-body").innerHTML = `<p class="muted">No positions yet. Add liquidity to a Holdfast pool to start.</p>`;
+    $("positions-body").innerHTML = `<p class="muted">Could not load position: ${err.shortMessage ?? err.message}</p>`;
     return;
   }
 
-  const cards = await Promise.all(tokenIds.map(async (tokenId) => {
-    const positionKey = await publicClient.readContract({
-      address: deployment.holdfastNFT, abi: abis.nft, functionName: "tokenIdToPositionKey", args: [tokenId],
-    });
-    const tier = await publicClient.readContract({
-      address: deployment.holdfastNFT, abi: abis.nft, functionName: "tokenIdToTier", args: [tokenId],
-    });
-    const streak = await publicClient.readContract({
-      address: deployment.holdfastHook, abi: abis.hook, functionName: "getStreak", args: [positionKey],
-    });
+  const owner = streak.owner ?? streak[0];
+  if (!owner || owner === "0x0000000000000000000000000000000000000000") {
+    $("positions-body").innerHTML = `<p class="muted">No positions yet. Subscribe a position to Holdfast to start.</p>`;
+    return;
+  }
 
-    const accumulatedScore = streak.accumulatedScore ?? streak[0] ?? 0n;
-    const firstActiveBlock = streak.firstActiveBlock ?? streak[3] ?? 0n;
-    const entrySqrtPrice = streak.entrySqrtPriceX96 ?? streak[4] ?? 0n;
-    const isActive = streak.isActive ?? streak[8] ?? false;
-    const realizedIL = streak.realizedIL ?? streak[9] ?? 0n;
+  const accumulatedScore = streak.accumulatedScore ?? streak[1] ?? 0n;
+  const firstActiveBlock = streak.firstActiveBlock ?? streak[4] ?? 0n;
+  const entrySqrtPrice = streak.entrySqrtPriceX96 ?? streak[5] ?? 0n;
+  const tier = Number(streak.currentTier ?? streak[6] ?? 0n);
+  const isActive = streak.isActive ?? streak[10] ?? false;
+  const realizedIL = streak.realizedIL ?? streak[11] ?? 0n;
 
-    const currentBlock = await publicClient.getBlockNumber();
-    const blocksActive = firstActiveBlock > 0n ? currentBlock - firstActiveBlock : 0n;
-    const progress = tierProgress(accumulatedScore, blocksActive, Number(tier));
+  const currentBlock = await publicClient.getBlockNumber();
+  const blocksActive = firstActiveBlock > 0n ? currentBlock - firstActiveBlock : 0n;
+  const progress = tierProgress(accumulatedScore, blocksActive, tier);
+  const ilDisplay = realizedIL === 0n
+    ? "Not closed"
+    : (realizedIL < 0n ? "-" : "") + fmtWad(realizedIL < 0n ? -realizedIL : realizedIL);
+  const isOwner = owner.toLowerCase() === userAddress.toLowerCase();
 
-    const ilDisplay = realizedIL === 0n
-      ? "Not closed"
-      : (realizedIL < 0n ? "-" : "") + fmtWad(realizedIL < 0n ? -realizedIL : realizedIL);
-
-    return `
-      <div class="position-card">
-        <div class="position-header">
-          <span class="position-id">Token #${tokenId.toString()}</span>
-          <span class="tier-badge ${TIER_CLASS[Number(tier)]}">${TIER_NAMES[Number(tier)]}</span>
-        </div>
-        <div class="position-stats">
-          <div>
-            <div class="position-stat-label">Accumulated Score</div>
-            <div class="position-stat-value">${fmtWad(accumulatedScore)}</div>
-          </div>
-          <div>
-            <div class="position-stat-label">Blocks Active</div>
-            <div class="position-stat-value">${blocksActive.toString()}</div>
-          </div>
-          <div>
-            <div class="position-stat-label">Entry sqrtPrice</div>
-            <div class="position-stat-value">${shorten(entrySqrtPrice.toString())}</div>
-          </div>
-          <div>
-            <div class="position-stat-label">Realized IL</div>
-            <div class="position-stat-value">${ilDisplay}</div>
-          </div>
-        </div>
-        <div class="progress-block">
-          <div class="progress-label"><span>Tier progress</span><span>${progress.label}</span></div>
-          <div class="progress-bar"><div class="progress-fill" style="width: ${progress.pct}%"></div></div>
-        </div>
-        <button class="claim-btn" data-token-id="${tokenId.toString()}" ${isActive ? "" : "disabled"}>Claim Rewards</button>
+  $("positions-body").innerHTML = `
+    <div class="position-card">
+      <div class="position-header">
+        <span class="position-id">Position #${tokenId.toString()}</span>
+        <span class="tier-badge ${TIER_CLASS[tier]}">${TIER_NAMES[tier]}</span>
       </div>
-    `;
-  }));
-
-  $("positions-body").innerHTML = cards.join("");
+      <div class="position-stats">
+        <div><div class="position-stat-label">Accumulated Score</div><div class="position-stat-value">${fmtWad(accumulatedScore)}</div></div>
+        <div><div class="position-stat-label">Blocks Active</div><div class="position-stat-value">${blocksActive.toString()}</div></div>
+        <div><div class="position-stat-label">Entry sqrtPrice</div><div class="position-stat-value">${shorten(entrySqrtPrice.toString())}</div></div>
+        <div><div class="position-stat-label">Realized IL</div><div class="position-stat-value">${ilDisplay}</div></div>
+      </div>
+      <div class="progress-block">
+        <div class="progress-label"><span>Tier progress</span><span>${progress.label}</span></div>
+        <div class="progress-bar"><div class="progress-fill" style="width: ${progress.pct}%"></div></div>
+      </div>
+      <button class="claim-btn" data-token-id="${tokenId.toString()}" ${isActive && isOwner ? "" : "disabled"}>Claim Rewards</button>
+    </div>
+  `;
 }
 
 async function refreshAll() {
@@ -378,20 +274,16 @@ async function connectWallet() {
   const provider = getMetaMaskProvider();
   if (!provider) { setWalletStatus("MetaMask not found"); return; }
   setConnectButton("Connecting...", true);
-
   try {
     walletClient = createWalletClient({ chain: holdfastChain, transport: custom(provider) });
     const [address] = await walletClient.requestAddresses();
     account = address;
-
     const currentChainId = await walletClient.getChainId();
     if (currentChainId !== CURRENT.network.chainId) {
       await switchOrAddChain(provider);
     }
-
     setWalletStatus(shorten(address));
     setConnectButton("Connected", true);
-    await ensureGasOnAnvil(address);
     await renderPositions(address);
   } catch (err) {
     console.error("[holdfast] connect failed:", err);
@@ -443,13 +335,8 @@ console.log("[holdfast] target:", CURRENT.network.name, "chainId:", CURRENT.netw
   const ok = await loadDeployment();
   if (!ok) return;
   await refreshAll();
-
-  // Watch new blocks and refresh on each one
   publicClient.watchBlockNumber({
-    onBlockNumber: (bn) => {
-      console.log("[holdfast] new block:", bn.toString());
-      refreshAll();
-    },
+    onBlockNumber: (bn) => { refreshAll(); },
     pollingInterval: 4000,
   });
 })();

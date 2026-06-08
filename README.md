@@ -34,15 +34,17 @@ Four contracts:
 - `src/libraries/ScoreAccumulator.sol` pure library for block score, range narrowness, volatility factor, and realized IL math
 - `src/YieldRouter.sol` Aave V3 supply/withdraw with try/catch fallback
 
-## Partner Integrations
+## Composability: Aave V3
 
-**Aave V3** is integrated as a real protocol dependency, not a mock:
+Holdfast integrates **Aave V3** as a real protocol dependency, not a mock:
 
 - `src/YieldRouter.sol` wraps Aave V3 Pool supply/withdraw; the bonus pool is held as aUSDC
 - `src/interfaces/IAaveV3Pool.sol` minimal interface (supply, withdraw, getReserveData)
 - aUSDC yield is reflected in the bonus pool balance and distributed at claim time
 - Integration is fork-tested against Base mainnet Aave V3 state in `test/fork/`
 - Withdrawal failure is handled with try/catch and a `pendingUsdc` fallback path in the claim flow
+
+Note: Aave is integrated for composability and yield, not as an official hookathon partner.
 
 ## Tests
 

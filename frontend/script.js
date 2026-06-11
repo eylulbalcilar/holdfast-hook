@@ -4,9 +4,11 @@ import { CURRENT, TIERS } from "./config.js";
 function getMetaMaskProvider() {
   if (!window.ethereum) return null;
   if (window.ethereum.providers?.length) {
-    return window.ethereum.providers.find((p) => p.isMetaMask) ?? null;
+    return window.ethereum.providers.find((p) => p.isCoinbaseWallet)
+        ?? window.ethereum.providers.find((p) => p.isMetaMask)
+        ?? window.ethereum.providers[0];
   }
-  return window.ethereum.isMetaMask ? window.ethereum : null;
+  return window.ethereum;
 }
 
 const holdfastChain = defineChain({

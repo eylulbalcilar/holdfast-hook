@@ -348,6 +348,10 @@ async function renderPositions(userAddress) {
     ? "Not closed"
     : (realizedIL < 0n ? "-" : "") + fmtWad(realizedIL < 0n ? -realizedIL : realizedIL);
   const isOwner = owner.toLowerCase() === userAddress.toLowerCase();
+  if (!isOwner) {
+    $("positions-body").innerHTML = `<p class="muted">No positions for this wallet. Connect the wallet that owns a Holdfast position.</p>`;
+    return;
+  }
 
   $("positions-body").innerHTML = `
     <div class="position-card">

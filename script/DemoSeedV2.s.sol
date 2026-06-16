@@ -181,22 +181,29 @@ contract DemoSeedV2 is Script {
         _posm.modifyLiquidities(abi.encode(actions, params), block.timestamp + 1200);
     }
 
-    /// @dev USDC-input swaps only (exact-in). USDC is currency1 (its address sorts above WETH), so
-    ///      these are oneForZero (zeroForOne = false), funded by the plentiful USDC rather than the
-    ///      scarce WETH, and a single SWAP_AMT is well-defined (no 6/18 decimal mismatch). They
-    ///      drift the price toward the upper tick; with enough pool depth the position stays in
-    ///      range across the churn, which is what drives globalScorePerLiquidity in afterSwap.
+    /// @dev Alternating-direction swaps (exact-in). Even legs are WETH -> USDC (zeroForOne = true)
+    ///      and odd legs are USDC -> WETH (zeroForOne = false). Alternating keeps the price near the
+    ///      center of the range so a thin demo position is not driven to a tick boundary and
+    ///      exhausted (the V1 single-direction seed reverted once repeated swaps pushed the price out
+    ///      of range). On Base Sepolia USDC is token1, so only the WETH -> USDC legs make USDC the
+    ///      unspecified output currency, which is the only case the hook captures into the bonus pool
+    ///      (HoldfastHookV2._afterSwap); the USDC -> WETH legs drive score and replenish the range
+    ///      without capturing. SWAP_AMT_WETH sizes the capturing leg (18 decimals); swapAmt sizes the
+    ///      replenish leg (USDC, 6 decimals), so each direction uses an amount well-defined for its
+    ///      own token decimals. Every leg drives globalScorePerLiquidity in afterSwap.
     function _runSwaps(uint256 n, uint256 swapAmt, uint256 rollBlocks) internal {
+        uint256 wethLeg = vm.envOr("SWAP_AMT_WETH", uint256(5e13)); // 0.00005 WETH in, capturing leg
         for (uint256 i = 0; i < n; i++) {
             // Advance blocks before each swap so the per-block gauge accrues in a dry-run; on a
             // real broadcast rollBlocks is 0 and real block progression does the work.
             if (rollBlocks > 0) vm.roll(block.number + rollBlocks);
+            bool wethToUsdc = (i % 2 == 0); // even legs capture (WETH -> USDC), odd legs replenish
             _swapRouter.swap(
                 _key,
                 SwapParams({
-                    zeroForOne: false,
-                    amountSpecified: -int256(swapAmt),
-                    sqrtPriceLimitX96: TickMath.MAX_SQRT_PRICE - 1
+                    zeroForOne: wethToUsdc,
+                    amountSpecified: -int256(wethToUsdc ? wethLeg : swapAmt),
+                    sqrtPriceLimitX96: wethToUsdc ? TickMath.MIN_SQRT_PRICE + 1 : TickMath.MAX_SQRT_PRICE - 1
                 }),
                 PoolSwapTest.TestSettings({takeClaims: false, settleUsingBurn: false}),
                 ""

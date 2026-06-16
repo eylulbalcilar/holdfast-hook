@@ -1,0 +1,61 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+  <title>Holdfast</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700&family=JetBrains+Mono:wght@400;500&display=swap" rel="stylesheet">
+  <link rel="stylesheet" href="style.css" />
+</head>
+<body>
+  <header>
+    <h1>Holdfast</h1>
+    <div id="wallet-actions">
+      <span id="wallet-status">Not connected</span>
+      <button id="connect-btn">Connect Wallet</button>
+    </div>
+  </header>
+
+  <main>
+    <section id="pool-state">
+      <h2>Pool State</h2>
+      <div id="pool-state-body">
+        <p class="muted">Loading...</p>
+      </div>
+    </section>
+
+    <section id="bonus-pool">
+      <h2>Bonus Pool</h2>
+      <div id="bonus-pool-body">
+        <p class="muted">Loading...</p>
+      </div>
+    </section>
+
+    <section id="positions">
+      <h2>Your Positions</h2>
+      <div id="positions-body">
+        <p class="muted">Connect wallet to view positions</p>
+      </div>
+    </section>
+
+    <section id="swap-panel">
+      <h2>Run a Swap</h2>
+      <div id="swap-body">
+        <p class="muted">Two small swaps (WETH to USDC, then USDC back to WETH) that capture fees into the bonus pool while keeping the price centered. Two wallet confirmations.</p>
+        <button id="swap-btn" class="claim-btn">Run swap (capture)</button>
+      </div>
+    </section>
+
+    <section id="tx-status">
+      <h2>Transaction</h2>
+      <div id="tx-status-body">
+        <p class="muted">Idle</p>
+      </div>
+    </section>
+  </main>
+
+  <script type="module" src="script.js"></script>
+</body>
+</html>

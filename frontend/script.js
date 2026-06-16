@@ -231,6 +231,15 @@ const erc20ApproveAbi = [
 ];
 
 const MAX_SQRT_PRICE_LIMIT = 1461446703485210103287273052203988822378723970341n; // MAX_SQRT_PRICE - 1
+const MIN_SQRT_PRICE_LIMIT = 4295128740n; // MIN_SQRT_PRICE + 1
+const MAX_UINT256 = (1n << 256n) - 1n;
+
+// Per-click swap sizing (mirrors the seed). Each click runs two legs so the bonus pool grows
+// while the price stays near the center of the range, allowing repeated clicks without
+// exhausting liquidity. On Base Sepolia USDC is token1, so only the WETH to USDC leg makes USDC
+// the unspecified output currency, which is the case the hook captures into the bonus pool.
+const CAPTURE_WETH_IN = parseUnits("0.00005", 18); // 5e13 WETH in, the capturing leg
+const REPLENISH_USDC_IN = parseUnits("0.1", 6); // 1e5 USDC in, the replenish leg
 
 function buildPoolKey() {
   const usdc = deployment.usdc.toLowerCase();
@@ -245,6 +254,40 @@ function buildPoolKey() {
   };
 }
 
+// Approve `token` to the swap router if the current allowance is below `needed`. Approves the
+// uint256 max so the user only ever confirms an approval once per token, not on every click.
+async function ensureAllowance(token, spender, needed, label) {
+  const allowance = await publicClient.readContract({
+    address: token, abi: erc20ApproveAbi, functionName: "allowance", args: [account, spender],
+  });
+  if (allowance >= needed) return;
+  setTxStatus("pending", `approving ${label} for swap router`);
+  const hash = await walletClient.writeContract({
+    account, address: token, abi: erc20ApproveAbi, functionName: "approve",
+    args: [spender, MAX_UINT256],
+  });
+  await publicClient.waitForTransactionReceipt({ hash });
+}
+
+// Run one exact-input swap leg. The price limit follows the direction: zeroForOne moves the
+// price down (limit MIN_SQRT_PRICE + 1), the other direction moves it up (limit MAX_SQRT_PRICE - 1).
+async function doSwapLeg(zeroForOne, amountIn) {
+  const key = buildPoolKey();
+  const params = {
+    zeroForOne,
+    amountSpecified: -amountIn,
+    sqrtPriceLimitX96: zeroForOne ? MIN_SQRT_PRICE_LIMIT : MAX_SQRT_PRICE_LIMIT,
+  };
+  const testSettings = { takeClaims: false, settleUsingBurn: false };
+  const hash = await walletClient.writeContract({
+    account, address: CURRENT.addresses.poolSwapTest, abi: POOL_SWAP_TEST_ABI,
+    functionName: "swap", args: [key, params, testSettings, "0x"],
+  });
+  const receipt = await publicClient.waitForTransactionReceipt({ hash });
+  if (receipt.status !== "success") throw new Error(`swap reverted: ${shorten(hash)}`);
+  return hash;
+}
+
 async function runSwap() {
   if (!walletClient || !account) {
     setTxStatus("error", "Wallet not connected");
@@ -252,44 +295,23 @@ async function runSwap() {
   }
   const swapRouter = CURRENT.addresses.poolSwapTest;
   const usdc = deployment.usdc;
-  const amount = parseUnits("0.2", 6); // 0.2 USDC
+  const weth = CURRENT.addresses.weth;
 
   try {
-    setTxStatus("pending", "checking USDC allowance");
-    const allowance = await publicClient.readContract({
-      address: usdc, abi: erc20ApproveAbi, functionName: "allowance", args: [account, swapRouter],
-    });
+    // Leg 1: WETH -> USDC (capturing leg). USDC is the unspecified output, so the hook captures
+    // a fraction of the USDC delta into the bonus pool and supplies it to Aave V3.
+    await ensureAllowance(weth, swapRouter, CAPTURE_WETH_IN, "WETH");
+    setTxStatus("pending", "swap 1 of 2: WETH to USDC (capture)");
+    const h1 = await doSwapLeg(true, CAPTURE_WETH_IN);
 
-    if (allowance < amount) {
-      setTxStatus("pending", "approving USDC for swap router");
-      const approveHash = await walletClient.writeContract({
-        account, address: usdc, abi: erc20ApproveAbi, functionName: "approve",
-        args: [swapRouter, parseUnits("1000000", 6)],
-      });
-      await publicClient.waitForTransactionReceipt({ hash: approveHash });
-    }
+    // Leg 2: USDC -> WETH (replenish leg). Pulls the price back toward the center of the range so
+    // the action can be repeated without driving the position to a tick boundary.
+    await ensureAllowance(usdc, swapRouter, REPLENISH_USDC_IN, "USDC");
+    setTxStatus("pending", "swap 2 of 2: USDC to WETH (replenish)");
+    const h2 = await doSwapLeg(false, REPLENISH_USDC_IN);
 
-    setTxStatus("pending", "swapping 0.2 USDC");
-    const key = buildPoolKey();
-    const params = {
-      zeroForOne: false,
-      amountSpecified: -amount,
-      sqrtPriceLimitX96: MAX_SQRT_PRICE_LIMIT,
-    };
-    const testSettings = { takeClaims: false, settleUsingBurn: false };
-
-    const hash = await walletClient.writeContract({
-      account, address: swapRouter, abi: POOL_SWAP_TEST_ABI, functionName: "swap",
-      args: [key, params, testSettings, "0x"],
-    });
-    setTxStatus("pending", `swap tx ${shorten(hash)}, waiting`);
-    const receipt = await publicClient.waitForTransactionReceipt({ hash });
-    if (receipt.status === "success") {
-      setTxStatus("success", `swap tx ${shorten(hash)}`);
-      await refreshAll();
-    } else {
-      setTxStatus("error", `swap reverted: ${shorten(hash)}`);
-    }
+    setTxStatus("success", `capture swaps done (${shorten(h1)}, ${shorten(h2)})`);
+    await refreshAll();
   } catch (err) {
     console.error("[holdfast] swap failed:", err);
     setTxStatus("error", err.shortMessage ?? err.message);

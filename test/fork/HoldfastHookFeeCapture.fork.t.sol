@@ -15,21 +15,23 @@ import {TickMath} from "v4-core/libraries/TickMath.sol";
 import {ModifyLiquidityParams, SwapParams} from "v4-core/types/PoolOperation.sol";
 import {PoolModifyLiquidityTest} from "v4-core/test/PoolModifyLiquidityTest.sol";
 import {PoolSwapTest} from "v4-core/test/PoolSwapTest.sol";
+import {IPositionManager} from "v4-periphery/interfaces/IPositionManager.sol";
 
-import {HoldfastHook} from "../../src/HoldfastHook.sol";
+import {HoldfastHookV2} from "../../src/HoldfastHookV2.sol";
 import {HoldfastNFT} from "../../src/HoldfastNFT.sol";
 import {YieldRouter} from "../../src/YieldRouter.sol";
 
 import {BaseMainnet} from "./constants/BaseMainnet.sol";
 
-/// @notice End-to-end fork test for the afterSwap real-USDC capture path.
+/// @notice End-to-end fork test for the HoldfastHookV2 afterSwap real-USDC capture path.
 /// @dev    Run with:
 ///         forge test --match-path test/fork/HoldfastHookFeeCapture.fork.t.sol \
 ///         --fork-url $BASE_RPC_URL --fork-block-number 30900000
 ///
-///         Verifies that a swap on a USDC/WETH pool with the HoldfastHook bound
+///         Verifies that a swap on a USDC/WETH pool with the deployed HoldfastHookV2 bound
 ///         captures the redistribution share into YieldRouter and supplies it to
-///         Aave V3, growing the router's aUSDC balance.
+///         Aave V3, growing the router's aUSDC balance. The capture path does not use the
+///         PositionManager (subscriber surface); it is passed to the constructor only.
 contract HoldfastHookFeeCaptureForkTest is Test {
     using PoolIdLibrary for PoolKey;
 
@@ -37,7 +39,7 @@ contract HoldfastHookFeeCaptureForkTest is Test {
     PoolModifyLiquidityTest internal modifyLiquidityRouter;
     PoolSwapTest internal swapRouter;
 
-    HoldfastHook internal hook;
+    HoldfastHookV2 internal hook;
     HoldfastNFT internal nft;
     YieldRouter internal yieldRouter;
 
@@ -90,20 +92,20 @@ contract HoldfastHookFeeCaptureForkTest is Test {
         yieldRouter = new YieldRouter(BaseMainnet.AAVE_V3_POOL, BaseMainnet.USDC, owner);
         aUsdc = IERC20(yieldRouter.aUsdc());
 
+        // V2 permission set: afterInitialize, beforeSwap, afterSwap, afterSwapReturnDelta only.
+        // Liquidity-lifecycle hooks are disabled in V2 (accounting moved to the subscriber surface).
         uint160 flags = uint160(
             Hooks.AFTER_INITIALIZE_FLAG
-                | Hooks.AFTER_ADD_LIQUIDITY_FLAG
-                | Hooks.BEFORE_REMOVE_LIQUIDITY_FLAG
-                | Hooks.AFTER_REMOVE_LIQUIDITY_FLAG
                 | Hooks.BEFORE_SWAP_FLAG
                 | Hooks.AFTER_SWAP_FLAG
                 | Hooks.AFTER_SWAP_RETURNS_DELTA_FLAG
         );
-        bytes memory constructorArgs = abi.encode(manager, nft, yieldRouter, BaseMainnet.USDC);
+        IPositionManager posm = IPositionManager(BaseMainnet.POSITION_MANAGER);
+        bytes memory constructorArgs = abi.encode(manager, posm, nft, yieldRouter, BaseMainnet.USDC);
         (address hookAddr, bytes32 salt) = HookMiner.find(
-            address(this), flags, type(HoldfastHook).creationCode, constructorArgs
+            address(this), flags, type(HoldfastHookV2).creationCode, constructorArgs
         );
-        hook = new HoldfastHook{salt: salt}(manager, nft, yieldRouter, BaseMainnet.USDC);
+        hook = new HoldfastHookV2{salt: salt}(manager, posm, nft, yieldRouter, BaseMainnet.USDC);
         require(address(hook) == hookAddr, "hook mined address mismatch");
         nft.setHook(address(hook));
 

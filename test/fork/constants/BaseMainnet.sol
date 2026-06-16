@@ -16,4 +16,9 @@ library BaseMainnet {
     // PoolSwapTest and PoolModifyLiquidityTest are NOT deployed on Base mainnet;
     // fork tests deploy them locally against the canonical PoolManager.
     address internal constant POOL_MANAGER = 0x498581fF718922c3f8e6A244956aF099B2652b2b;
+
+    // Canonical PositionManager (the ISubscriber counterparty in V2). Verified on the pinned
+    // fork block: its poolManager() returns POOL_MANAGER above. The V2 capture fork test passes
+    // it to the HoldfastHookV2 constructor; the capture path itself never calls it.
+    address internal constant POSITION_MANAGER = 0x7C5f5A4bBd8fD63184577525326123B519429bDc;
 }

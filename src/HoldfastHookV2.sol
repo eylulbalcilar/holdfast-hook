@@ -40,10 +40,6 @@ import {YieldRouter} from "./YieldRouter.sol";
 ///        (msg.sender == address(positionManager)).
 ///      poolManager and positionManager are different contracts, so no function is
 ///      ever reachable through both guards.
-///
-///      STEP 2/3 SCAFFOLD: notification bodies are intentionally empty stubs
-///      (signatures + guard only); lifecycle bodies return their selectors only.
-///      Handler logic lands in Step 4+.
 contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
     using PoolIdLibrary for PoolKey;
     using StateLibrary for IPoolManager;
@@ -162,8 +158,8 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
     mapping(address => uint256) public pendingUsdc;
 
     /// @notice Sum of accumulatedScore across active positions in a given tier (WAD scale).
-    /// @dev Decremented (clamped) on burn; the increment side lands with the swap-path
-    ///      score accrual in a later step.
+    /// @dev Incremented in _settleScore as a position's score accrues within its tier, and
+    ///      decremented (clamped) on burn and at the claim payment boundary.
     mapping(uint8 => uint256) public sumOfTierScores;
 
     /// @notice Sum of |realizedIL| across closed positions, denominator for the realized-IL
@@ -430,7 +426,6 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
 
     // ---------------------------------------------------------------------
     // ISubscriber notification surface (onlyByPosm)
-    // STEP 2/3: empty stubs; handler bodies land in Step 4.
     // notifyModifyLiquidity and notifyBurn MUST NEVER revert (they bubble up and
     // revert the LP's tx in v4-periphery); all external calls are deferred to claim.
     // ---------------------------------------------------------------------
@@ -505,8 +500,8 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
             return;
         }
 
-        // s.isActive && s.owner == owner: same-owner re-subscribe. Not specified for Step 4;
-        // leave the streak intact (no reset, no data loss).
+        // s.isActive && s.owner == owner: same-owner re-subscribe. Leave the streak intact
+        // (no reset, no data loss).
     }
 
     /// @inheritdoc ISubscriber
@@ -585,7 +580,7 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
 
         // 4) Tier accounting. Locked model: the score stays in sumOfTierScores until PAID, so a
         //    burn does NOT decrement it here. The frozen position keeps its score in the
-        //    denominator and remains claimable; claim 8b removes it when the position is paid.
+        //    denominator and remains claimable; the claim payout removes it when the position is paid.
         //    Only the realized-IL arm is fed here. abs(IL) (the formula returns a non-positive
         //    value, so il < 0 means a real loss) feeds the realized-IL claim arm.
         if (il < 0) {
@@ -612,9 +607,9 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
     // Claim (runs in the LP's own tx frame: external calls and reverts allowed)
     // ---------------------------------------------------------------------
 
-    /// @notice Settle and recompute tier for a position ahead of payout. STEP 8a implements
-    ///         authorization, the final lazy settle, and tier accounting only; the Aave
-    ///         withdraw and USDC transfer are STEP 8b.
+    /// @notice Settle and recompute tier for a position, then pay its bonus pool share. The flow
+    ///         is authorization, the final lazy settle, and tier accounting, followed by the Aave
+    ///         withdraw and USDC transfer.
     /// @dev Unlike the notify handlers, claim runs in the LP's own transaction frame (not
     ///      bubbled up by PositionManager), so external calls and revert-on-bad-input are
     ///      allowed and correct here. Authorization binds to the CACHED streak.owner, never
@@ -629,13 +624,13 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
         // Settle and re-evaluate tier only while the streak is active. A frozen/burned streak
         // already had its final settle in notifyBurn; re-running here would double-count the
         // score. The frozen position's score stays in sumOfTierScores (locked model) and is
-        // removed by the 8b effects below when this claim pays it out.
+        // removed by the effects below when this claim pays it out.
         if (s.isActive) {
             _settleScore(tokenId);
             _evaluateAndMaybeMint(tokenId);
         }
 
-        // ---- STEP 8b: payout ----
+        // ---- Payout ----
 
         // Bonus pool is the router's real aUSDC balance (Aave supply + accrued yield),
         // USDC-native. Express it in WAD for the internal share math; the single conversion
@@ -717,12 +712,12 @@ contract HoldfastHookV2 is BaseHook, ISubscriber, ReentrancyGuard {
     ///         transferred-away position (converted to its tier share now), plus any USDC debt
     ///         from a prior partial Aave fill. Runs in the caller's own frame, so external calls
     ///         and reverts are allowed (unlike the notify handlers).
-    /// @dev Mirrors claim 8b: tier-arm share math in WAD against the LIVE sumOfTierScores, one
+    /// @dev Mirrors the claim payout: tier-arm share math in WAD against the LIVE sumOfTierScores, one
     ///      WAD->USDC boundary conversion, CEI ordering, Aave withdraw with partial-fill
     ///      fallback. The score stays in sumOfTierScores until paid here (locked model), so the
     ///      decrement happens at this payment boundary.
     function withdrawPendingClaim() external nonReentrant {
-        // Bonus pool in WAD, same basis as claim 8b.
+        // Bonus pool in WAD, same basis as the claim payout.
         uint256 bonusPoolWad = IERC20(yieldRouter.aUsdc()).balanceOf(address(yieldRouter)) * USDC_TO_WAD;
         uint256 usdcDebt = pendingUsdc[msg.sender];
 

@@ -17,7 +17,7 @@ Holdfast is a Uniswap v4 hook designed for volatile pair pools. It addresses the
 
 **Honest positioning.** Holdfast is not a full IL hedge. It does not eliminate impermanent loss. It measures IL exposure, partially compensates realized IL from a bonus pool, and provides retention incentives for LPs who stay through high-volatility periods. Full IL hedging requires options primitives or external hedging infrastructure, which is out of scope.
 
-**Fee model.** Holdfast does not charge swappers any additional fee. A fixed portion (`redistributionRate`, default 15%) of the existing pool fee is designed to be redirected to the bonus pool. Swap costs remain unchanged. Tier-qualified LPs recover the redistributed amount through bonus pool shares; non-qualified (mercenary) LPs experience reduced direct fee income, which functions as a structural retention incentive. (See Bonus Pool Funding for the current implementation status of the capture path.)
+**Fee model.** Holdfast does not charge swappers any additional fee. A fixed portion (`redistributionRate`, default 15%) of the existing pool fee is redirected to the bonus pool inside `afterSwap`. Swap costs remain unchanged. Tier-qualified LPs recover the redistributed amount through bonus pool shares; non-qualified (mercenary) LPs experience reduced direct fee income, which functions as a structural retention incentive. (See Bonus Pool Funding.)
 
 ## UHI9 Theme Alignment
 
@@ -36,9 +36,9 @@ Holdfast is deployed and verified-working on Base Sepolia (chainId 84532).
 
 | Contract | Address |
 |---|---|
-| HoldfastHook | `0xC7B5f55C6a1EaB55EDbe72cA7e3c4cA1Bd9b90c4` |
-| HoldfastNFT | `0x3caA1d58c469390cE301c05C5b0c545EAF21903a` |
-| YieldRouter | `0x1de3015754e615d31aCA1FF474c74640886c3Eff` |
+| HoldfastHook | `0xAbCada5D4ca9CD87E74F6ED3daA3974ad39d90c4` |
+| HoldfastNFT | `0x4D54F634Dc5461866d174825fCAaFD8481Fe6EC7` |
+| YieldRouter | `0xa24cbe3667fCAa4C3a53efB045b7bb5c5C698f57` |
 
 The hook address encodes its permission flags in its low bits (`address & 0x3FFF == 0x10C4`): `afterInitialize`, `beforeSwap`, `afterSwap`, and `afterSwapReturnsDelta`. The contract was deployed at a CREATE2 address mined to match exactly this permission set; `BaseHook`'s constructor re-validates the encoded flags on construction.
 
@@ -55,12 +55,12 @@ Canonical Base Sepolia dependencies the deployment binds to:
 
 The complete subscriber-native cycle has been exercised on Base Sepolia with real funds:
 
-1. A position was minted through the canonical PositionManager (tokenId 24715) in a WETH/USDC pool (fee 3000, tick spacing 60).
+1. A position was minted through the canonical PositionManager (tokenId 24915) in a WETH/USDC pool (fee 3000, tick spacing 60).
 2. The owner called `posm.subscribe(tokenId, holdfast, "")`, which fired `notifySubscribe` and began accrual.
-3. Swap activity drove the pool-level score accumulator; after the Bronze tenure requirement (≥1000 blocks) was met and the score threshold crossed, a settle minted a Bronze badge (NFT tokenId 1) for the position.
-4. The owner called `claim(24715)` and received the Bronze tier-weighted share of a 100 USDC bonus pool (17.5 USDC = 100 × 70% tier arm × 25% Bronze weight, sole LP in tier). The position's score was reset and removed from the tier denominator at the payment boundary; the router's aUSDC balance dropped by the paid amount.
+3. Swap activity drove the pool-level score accumulator and, through the live `afterSwap` capture path, funded the bonus pool automatically: the YieldRouter's aUSDC balance grew from zero purely from captured swap fees supplied to Aave V3, with no manual seeding.
+4. After the score threshold was crossed with the minimum-tenure requirement met, a settle minted a tier badge (NFT tokenId 1) and recorded the position's tier-indexed score. A `claim` pays the position's tier-weighted share of the capture-funded bonus pool, resetting its score and removing it from the tier denominator at the payment boundary; the share is withdrawn from Aave through the router.
 
-This validates the full design on-chain: subscriber-native identity, tier-indexed accounting, the decrement-at-payment model, the WAD→USDC boundary conversion, and the Aave withdraw path.
+This validates the full design on-chain: subscriber-native identity, the live `afterSwap` capture path, tier-indexed accounting, the decrement-at-payment model, the WAD→USDC boundary conversion, and the Aave supply/withdraw path.
 
 The contract logic is additionally covered by a Foundry suite of 138 passing tests (unit, integration, and fork), including end-to-end natural-flow integration tests for owner transfer, multi-LP isolation, partial liquidity removal, and dropped-unsubscribe reconciliation.
 
@@ -279,7 +279,7 @@ Where `redistributionRate` defaults to 15% (configurable per pool), and `volatil
 
 Rejected alternative: a dynamic fee via `LPFeeLibrary` in `beforeSwap`. Rejected because it would either inflate the swapper-facing fee (violating the "swap costs remain unchanged" positioning) or require pools to be initialized in dynamic-fee mode (restricting deployment surface).
 
-**Implementation status of the capture path.** The fee-capture wiring inside `afterSwap` (the `poolManager.take(...)` → `YieldRouter.supplyToAave(...)` step that moves the carved-out fee into the bonus pool) is **not wired in the current submission**. The score, tier, IL, and claim/distribution paths are complete and proven on-chain; the bonus pool is funded by supplying USDC to the router directly (the router holds aUSDC as a plain ERC-20 balance, which `claim`/`withdrawPendingClaim` read as the pool). For the on-chain demonstration, the router was funded with 100 USDC this way. Wiring the automatic `afterSwap` capture is the next implementation step and does not change any of the distribution mathematics, which is calibrated against the captured share.
+**Capture path status.** The fee-capture wiring inside `afterSwap` (the `poolManager.take(...)` and `YieldRouter.supplyToAave(...)` calls that move the carved-out fee into the bonus pool, netted by the returned hook delta) is **wired and live in the deployed contract**. The bonus pool is funded automatically from real swap fees: on Base Sepolia the YieldRouter's aUSDC balance grows from swap activity alone, with no manual seeding. The score, tier, IL, and claim/distribution paths are complete and proven on-chain, and the distribution mathematics is unchanged, calibrated against the captured share. Capture applies only when USDC is the swap's unspecified currency (see Swap Hook Mechanics); the carve-out is funded by reducing the LP-direct fee accrual, never by an extra swapper payment.
 
 ### Bonus Pool Distribution
 
@@ -512,7 +512,7 @@ Holdfast is designed for a specific pool segment. It is not suitable for:
 
 Implementation scope of the current submission:
 
-- **Automatic fee capture is not yet wired** in `afterSwap` (see Bonus Pool Funding). The bonus pool is funded by direct USDC supply for now; the distribution mathematics is unchanged by this. Wiring the capture is the next step.
+- **Automatic fee capture is wired and live** in `afterSwap` (see Bonus Pool Funding). The bonus pool is funded from real swap fees, proven on Base Sepolia, with no manual seeding.
 - **Badges are non-transferable** by design (the transferable asset is the posm position NFT).
 
 Recommended deployment criteria: volatile pairs (>20% annualized historical volatility); active swap volume (~100+ swaps/day); one side of the pair must be USDC.
@@ -565,8 +565,7 @@ Holdfast's contribution is the synthesis: IL-aware scoring + realized-IL compens
 
 **Out of scope / next steps:**
 
-- Automatic `afterSwap` fee capture wiring (designed; bonus pool currently funded by direct supply)
-- On-chain SVG metadata (using IPFS-hosted static images instead)
+- On-chain SVG metadata (using IPFS-hosted JSON metadata instead)
 - ERC-6909 accrual token (direct USDC transfers instead)
 - Comprehensive frontend (NFT gallery, advanced analytics)
 - Full IL hedging via options primitives

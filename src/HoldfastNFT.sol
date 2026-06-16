@@ -17,11 +17,11 @@ contract HoldfastNFT is ERC721, Ownable {
     uint8 public constant TIER_SILVER = 2;
     uint8 public constant TIER_GOLD = 3;
 
-    /// @notice IPFS CID placeholders. Replace with real CIDs once images are uploaded.
-    /// @dev TODO: upload Bronze/Silver/Gold PNGs to IPFS, replace these literals.
-    string private constant BRONZE_URI = "ipfs://bafkreibronzeplaceholdercidxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
-    string private constant SILVER_URI = "ipfs://bafkreisilverplaceholdercidxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
-    string private constant GOLD_URI = "ipfs://bafkreigoldplaceholdercidxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+    /// @notice Per-tier ERC-721 metadata JSON CIDs on IPFS. Each JSON carries name,
+    ///         description, image (the tier PNG), and attributes.
+    string private constant BRONZE_URI = "ipfs://bafkreibfnikwxbrk35ooasgk6wruh4tzk7hxlzb27mmf3d4gdgnduqulou";
+    string private constant SILVER_URI = "ipfs://bafkreigxsa4m3socq5huqlunzhph255bcocraudus7nlfe3tspxyswcqae";
+    string private constant GOLD_URI = "ipfs://bafkreieor3eys6c2bq43sbf7k5hy36sfpoqpiik6gsbkl52kfxdtrdsr5u";
 
     /// @notice Authorized hook contract. Set once via setHook.
     address public hook;

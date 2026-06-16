@@ -32,9 +32,10 @@ contract HoldfastNFTTest is Test {
     bytes32 internal constant KEY_1 = keccak256("position-1");
     bytes32 internal constant KEY_2 = keccak256("position-2");
 
-    string internal constant BRONZE_URI = "ipfs://bafkreibronzeplaceholdercidxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
-    string internal constant SILVER_URI = "ipfs://bafkreisilverplaceholdercidxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
-    string internal constant GOLD_URI = "ipfs://bafkreigoldplaceholdercidxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxxx";
+    // Mirror the per-tier metadata JSON CIDs in HoldfastNFT; tokenURI returns these verbatim.
+    string internal constant BRONZE_URI = "ipfs://bafkreibfnikwxbrk35ooasgk6wruh4tzk7hxlzb27mmf3d4gdgnduqulou";
+    string internal constant SILVER_URI = "ipfs://bafkreigxsa4m3socq5huqlunzhph255bcocraudus7nlfe3tspxyswcqae";
+    string internal constant GOLD_URI = "ipfs://bafkreieor3eys6c2bq43sbf7k5hy36sfpoqpiik6gsbkl52kfxdtrdsr5u";
 
     function setUp() public {
         nft = new HoldfastNFT(owner);
